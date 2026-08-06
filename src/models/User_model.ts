@@ -3,7 +3,8 @@ import mongoose, { Document } from "mongoose";
 export interface IUser extends Document {
   name: string;
   email: string;
-  password: string;
+  googleId: string;
+  profileImage?: string;
 }
 
 const userSchema = new mongoose.Schema<IUser>(
@@ -17,9 +18,14 @@ const userSchema = new mongoose.Schema<IUser>(
       required: true,
       unique: true
     },
-    password: {
+    googleId: {
       type: String,
-      required: true
+      required: true,
+      unique: true
+    },
+    profileImage: {
+      type: String,
+      default: ""
     }
   },
   {

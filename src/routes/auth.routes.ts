@@ -1,14 +1,17 @@
 import { Router } from "express";
 import {
-  register,
-  login,
-  logout
+  googleLogin,
+  logout,
+  deleteAccount,
+  adminLogin,
 } from "../controllers/auth_controller";
+import { protect } from "../middleware/auth_middleware";
 
 const router = Router();
 
-router.post("/register", register);
-router.post("/login", login);
+router.post("/google", googleLogin);
+router.post("/admin-login", adminLogin);
 router.post("/logout", logout);
+router.delete("/profile", protect, deleteAccount);
 
 export default router;
