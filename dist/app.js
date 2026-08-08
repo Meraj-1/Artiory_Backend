@@ -23,6 +23,9 @@ const allowedOrigins = [
     "http://127.0.0.1:3002",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://artiory-dashboard.vercel.app",
+    "https://artiory-frontend-murex.vercel.app",
+    "https://artiory-backend.vercel.app",
     process.env.FRONTEND_URL,
     process.env.DASHBOARD_URL,
 ].filter(Boolean);
