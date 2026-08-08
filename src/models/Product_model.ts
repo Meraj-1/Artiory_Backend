@@ -18,6 +18,7 @@ export interface IProduct extends Document {
   sellingPrice?: number;
   mrp?: number;
   stockQuantity?: number;
+  reorderLevel?: number;
   shortDescription?: string;
   detailedDescription?: string;
   weight?: number;
@@ -78,6 +79,10 @@ const productSchema = new Schema<IProduct>(
     stockQuantity: {
       type: Number,
       default: 0,
+    },
+    reorderLevel: {
+      type: Number,
+      default: 5,
     },
     shortDescription: {
       type: String,

@@ -10,6 +10,10 @@ import userRoutes from "./routes/user.routes";
 import orderRoutes from "./routes/order.routes";
 import addressRoutes from "./routes/address.routes";
 import productRoutes from "./routes/product.routes";
+import comboRoutes from "./routes/combo.routes";
+import inventoryRoutes from "./routes/inventory.routes";
+import customerRoutes from "./routes/customer.routes";
+import couponRoutes from "./routes/coupon.routes";
 
 const app = express();
 
@@ -61,5 +65,9 @@ app.use("/api/users", userRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/address", addressRoutes);
 app.use("/api/products", productRoutes);
+app.use("/api/combos", comboRoutes);
+app.use("/api/inventory", inventoryRoutes);
+app.use("/api/customers", customerRoutes);
+app.use("/api/coupons", couponRoutes);
 
 export default app;

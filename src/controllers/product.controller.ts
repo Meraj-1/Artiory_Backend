@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { v4 as uuidv4 } from "uuid";
 import Product from "../models/Product_model";
+import ComboProduct from "../models/ComboProduct_model";
 import { r2Client, R2_BUCKET_NAME, R2_PUBLIC_URL } from "../config/r2";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -224,13 +225,12 @@ export const getDashboardProducts = async (req: Request, res: Response): Promise
     else if (status === "Draft") { filter.active = false; }
     else if (status === "Pending") { filter.published = false; filter.active = true; }
 
-    const skip = (Number(page) - 1) * Number(limit);
-    const [products, total] = await Promise.all([
-      Product.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
+    const [products, productsTotal] = await Promise.all([
+      Product.find(filter).sort({ createdAt: -1 }),
       Product.countDocuments(filter),
     ]);
 
-    const data = products.map((p) => {
+    const formattedProducts = products.map((p) => {
       const normalized = normalizeProductImageFields(p);
       return {
         id: normalized._id,
@@ -242,12 +242,60 @@ export const getDashboardProducts = async (req: Request, res: Response): Promise
         image: normalized.image || normalized.thumbnail || "",
         images: Array.isArray(normalized.images) ? normalized.images : [],
         stock: normalized.stockQuantity || 0,
+        createdAt: normalized.createdAt,
+        isCombo: false,
       };
     });
 
+    // Load combo products
+    let comboFilter: Record<string, any> = {};
+    if (search) comboFilter.comboName = { $regex: search, $options: "i" };
+    if (status === "Published") { comboFilter.published = true; }
+    else if (status === "Draft") { comboFilter.active = false; }
+    else if (status === "Pending") { comboFilter.published = false; comboFilter.active = true; }
+
+    const combos = await ComboProduct.find(comboFilter)
+      .populate("items.product", "thumbnail image images")
+      .sort({ createdAt: -1 });
+
+    const combosTotal = combos.length;
+
+    const formattedCombos = combos.map((c) => {
+      const firstProd: any = c.items[0]?.product;
+      const image = firstProd?.thumbnail || firstProd?.image || (firstProd?.images && firstProd.images[0]) || "/product/placeholder.svg";
+      const images = firstProd?.images || [];
+
+      return {
+        id: c._id,
+        name: c.comboName,
+        category: "Stationery Combo Set",
+        price: c.comboPrice,
+        status: c.published ? "Published" : !c.active ? "Draft" : "Pending",
+        date: c.createdAt?.toISOString?.().split("T")[0] || "",
+        image,
+        images,
+        stock: c.comboStock,
+        createdAt: c.createdAt,
+        isCombo: true,
+      };
+    });
+
+    const mergedData = [...formattedProducts, ...formattedCombos];
+
+    // Sort by date desc
+    mergedData.sort((a, b) => {
+      const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return dateB - dateA;
+    });
+
+    const total = productsTotal + combosTotal;
+    const skip = (Number(page) - 1) * Number(limit);
+    const paginatedData = mergedData.slice(skip, skip + Number(limit));
+
     res.status(200).json({
       success: true,
-      data,
+      data: paginatedData,
       pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) },
     });
   } catch (err) {
@@ -289,14 +337,14 @@ export const getProducts = async (req: Request, res: Response): Promise<void> =>
 // GET /api/products/store  — only published products for frontend
 export const getStoreProducts = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { search, category, page = 1, limit = 20 } = req.query;
+    const { search, category, page = 1, limit = 1000 } = req.query;
 
     const filter: Record<string, any> = { published: true };
     if (category) filter.category = category;
     if (search) filter.productName = { $regex: search, $options: "i" };
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [products, total] = await Promise.all([
+    const [products, productsTotal] = await Promise.all([
       Product.find(filter)
         .select("productName category subCategory sellingPrice mrp thumbnail images stockQuantity skuCode shortDescription variants createdAt")
         .sort({ createdAt: -1 })
@@ -305,7 +353,7 @@ export const getStoreProducts = async (req: Request, res: Response): Promise<voi
       Product.countDocuments(filter),
     ]);
 
-    const data = products.map((product) => {
+    const formattedProducts = products.map((product) => {
       const normalized = normalizeProductImageFields(product);
       return {
         _id: normalized._id,
@@ -318,12 +366,75 @@ export const getStoreProducts = async (req: Request, res: Response): Promise<voi
         image: normalized.image || normalized.thumbnail || "",
         thumbnail: normalized.thumbnail || "",
         images: Array.isArray(normalized.images) ? normalized.images : [],
+        stockQuantity: normalized.stockQuantity ?? 0,
+        skuCode: normalized.skuCode || "",
+        createdAt: normalized.createdAt,
+        isCombo: false
       };
     });
 
+    // Load combo products if category matches Stationery, Stationery Combo Set or is empty (All)
+    let comboData: any[] = [];
+    let combosTotal = 0;
+
+    const normalizedCategory = category ? category.toString().toLowerCase() : "";
+    const includesCombo = !category || normalizedCategory === "stationery" || normalizedCategory === "stationery combo set";
+
+    if (includesCombo) {
+      const comboFilter: Record<string, any> = { published: true };
+      if (search) {
+        comboFilter.comboName = { $regex: search, $options: "i" };
+      }
+
+      const combos = await ComboProduct.find(comboFilter)
+        .populate("items.product", "productName skuCode sellingPrice mrp thumbnail images stockQuantity")
+        .sort({ createdAt: -1 });
+
+      combosTotal = combos.length;
+
+      comboData = combos.map((c) => {
+        const mrp = c.items.reduce((sum, item: any) => {
+          const prod = item.product;
+          return sum + ((prod?.sellingPrice ?? prod?.price ?? 0) * (item.quantity || 1));
+        }, 0);
+        
+        const firstProd: any = c.items[0]?.product;
+        const image = firstProd?.thumbnail || firstProd?.image || (firstProd?.images && firstProd.images[0]) || "/product/placeholder.svg";
+        const images = firstProd?.images || [];
+
+        return {
+          _id: c._id,
+          subCategory: "Stationery Combo Set",
+          category: "Stationery",
+          productName: c.comboName,
+          shortDescription: c.comboDesc || "Special Combo Pack",
+          sellingPrice: c.comboPrice,
+          mrp: mrp || c.comboPrice,
+          image,
+          thumbnail: image,
+          images,
+          stockQuantity: c.comboStock,
+          skuCode: c.comboSku,
+          createdAt: c.createdAt,
+          isCombo: true
+        };
+      });
+    }
+
+    const mergedData = [...formattedProducts, ...comboData];
+
+    // Sort by createdAt desc
+    mergedData.sort((a, b) => {
+      const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return dateB - dateA;
+    });
+
+    const total = productsTotal + combosTotal;
+
     res.status(200).json({
       success: true,
-      data,
+      data: mergedData,
       pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) },
     });
   } catch (err) {
@@ -335,9 +446,52 @@ export const getStoreProducts = async (req: Request, res: Response): Promise<voi
 // GET /api/products/:id
 export const getProductById = async (req: Request, res: Response): Promise<void> => {
   try {
-    const product = await Product.findById(req.params.id);
-    if (!product) { sendError(res, 404, "Product not found"); return; }
-    res.status(200).json({ success: true, data: normalizeProductImageFields(product) });
+    let product = await Product.findById(req.params.id);
+    if (product) {
+      res.status(200).json({ success: true, data: normalizeProductImageFields(product) });
+      return;
+    }
+
+    const combo = await ComboProduct.findById(req.params.id)
+      .populate("items.product", "productName skuCode sellingPrice mrp thumbnail images stockQuantity shortDescription detailedDescription");
+
+    if (!combo) {
+      sendError(res, 404, "Product not found");
+      return;
+    }
+
+    const mrp = combo.items.reduce((sum, item: any) => {
+      const prod = item.product;
+      return sum + ((prod?.sellingPrice ?? prod?.price ?? 0) * (item.quantity || 1));
+    }, 0);
+
+    const firstProd: any = combo.items[0]?.product;
+    const image = firstProd?.thumbnail || firstProd?.image || (firstProd?.images && firstProd.images[0]) || "/product/placeholder.svg";
+    const images = firstProd?.images || [];
+
+    const formattedCombo = {
+      _id: combo._id,
+      productName: combo.comboName,
+      skuCode: combo.comboSku,
+      sellingPrice: combo.comboPrice,
+      mrp: mrp || combo.comboPrice,
+      stockQuantity: combo.comboStock,
+      category: "Stationery",
+      subCategory: "Stationery Combo Set",
+      shortDescription: combo.comboDesc || "Special Combo Pack",
+      detailedDescription: combo.comboDesc || "Special Combo Pack containing multiple curated items.",
+      thumbnail: image,
+      images,
+      variants: [],
+      weight: 0,
+      dimensions: {},
+      gst: 0,
+      isCombo: true,
+      active: combo.active,
+      published: combo.published,
+    };
+
+    res.status(200).json({ success: true, data: formattedCombo });
   } catch (err) {
     console.error(err);
     sendError(res, 500, "Server Error");
@@ -438,8 +592,14 @@ export const updateProduct = async (req: Request, res: Response): Promise<void> 
 export const deleteProduct = async (req: Request, res: Response): Promise<void> => {
   try {
     const deleted = await Product.findByIdAndDelete(req.params.id);
-    if (!deleted) { sendError(res, 404, "Product not found"); return; }
-    res.status(200).json({ success: true, message: "Product deleted successfully" });
+    if (deleted) {
+      res.status(200).json({ success: true, message: "Product deleted successfully" });
+      return;
+    }
+
+    const deletedCombo = await ComboProduct.findByIdAndDelete(req.params.id);
+    if (!deletedCombo) { sendError(res, 404, "Product not found"); return; }
+    res.status(200).json({ success: true, message: "Combo product deleted successfully" });
   } catch (err) {
     console.error(err);
     sendError(res, 500, "Server Error");
@@ -449,13 +609,23 @@ export const deleteProduct = async (req: Request, res: Response): Promise<void> 
 // PATCH /api/products/:id/publish
 export const publishProduct = async (req: Request, res: Response): Promise<void> => {
   try {
-    const product = await Product.findByIdAndUpdate(
+    let product = await Product.findByIdAndUpdate(
       req.params.id,
       { published: true, active: true },
       { new: true }
     );
-    if (!product) { sendError(res, 404, "Product not found"); return; }
-    res.status(200).json({ success: true, message: "Product published", data: product });
+    if (product) {
+      res.status(200).json({ success: true, message: "Product published", data: product });
+      return;
+    }
+
+    const combo = await ComboProduct.findByIdAndUpdate(
+      req.params.id,
+      { published: true, active: true },
+      { new: true }
+    );
+    if (!combo) { sendError(res, 404, "Product not found"); return; }
+    res.status(200).json({ success: true, message: "Combo product published", data: combo });
   } catch (err) {
     console.error(err);
     sendError(res, 500, "Server Error");
@@ -465,13 +635,23 @@ export const publishProduct = async (req: Request, res: Response): Promise<void>
 // PATCH /api/products/:id/unpublish
 export const unpublishProduct = async (req: Request, res: Response): Promise<void> => {
   try {
-    const product = await Product.findByIdAndUpdate(
+    let product = await Product.findByIdAndUpdate(
       req.params.id,
       { published: false },
       { new: true }
     );
-    if (!product) { sendError(res, 404, "Product not found"); return; }
-    res.status(200).json({ success: true, message: "Product unpublished", data: product });
+    if (product) {
+      res.status(200).json({ success: true, message: "Product unpublished", data: product });
+      return;
+    }
+
+    const combo = await ComboProduct.findByIdAndUpdate(
+      req.params.id,
+      { published: false },
+      { new: true }
+    );
+    if (!combo) { sendError(res, 404, "Product not found"); return; }
+    res.status(200).json({ success: true, message: "Combo product unpublished", data: combo });
   } catch (err) {
     console.error(err);
     sendError(res, 500, "Server Error");
