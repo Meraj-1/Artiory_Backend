@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import User from "../models/User_model";
 import jwt from "jsonwebtoken";
 import { OAuth2Client } from "google-auth-library";
+import bcrypt from "bcryptjs";
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -145,5 +146,59 @@ export const adminLogin = async (
   } catch (error) {
     console.error("Admin Login Error:", error);
     return res.status(500).json({ message: "Server Error during admin login" });
+  }
+};
+
+export const registerUser = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const { name, email: rawEmail, password } = req.body;
+
+    if (!name || !rawEmail || !password) {
+      return res.status(400).json({ error: "Name, email, and password are required" });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters long" });
+    }
+
+    const email = rawEmail.toLowerCase().trim();
+
+    const existing = await User.findOne({ email });
+    if (existing) {
+      if (existing.passwordHash) {
+        return res.status(409).json({ error: "Email already in use." });
+      }
+
+      const salt = await bcrypt.genSalt(12);
+      const passwordHash = await bcrypt.hash(password, salt);
+      existing.passwordHash = passwordHash;
+      existing.name = existing.name || name;
+      await existing.save();
+
+      return res.status(200).json({
+        message: "Password set successfully. You can now login.",
+        user: { id: existing._id, name: existing.name, email: existing.email }
+      });
+    }
+
+    const salt = await bcrypt.genSalt(12);
+    const passwordHash = await bcrypt.hash(password, salt);
+
+    const newUser = await User.create({
+      name,
+      email,
+      passwordHash,
+    });
+
+    res.status(201).json({
+      message: "User registered successfully",
+      user: { id: newUser._id, name: newUser.name, email: newUser.email }
+    });
+  } catch (error: any) {
+    console.error("Register Error:", error);
+    if (error.message && error.message.includes("duplicate key error")) {
+      return res.status(409).json({ error: "Email already in use" });
+    }
+    res.status(500).json({ error: "Server Error during registration" });
   }
 };

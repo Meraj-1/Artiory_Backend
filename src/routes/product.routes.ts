@@ -1,6 +1,8 @@
 import { Router } from "express";
 import multer from "multer";
 import {
+  getDashboardProducts,
+  getStoreProducts,
   getProducts,
   getProductById,
   createProduct,
@@ -16,15 +18,17 @@ const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Public
+router.get("/dashboard", getDashboardProducts);
+router.get("/store", getStoreProducts);
 router.get("/", getProducts);
 router.get("/:id", getProductById);
 
 // Protected
-router.post("/", protect, upload.single("image"), createProduct);
-router.put("/:id", protect, upload.single("image"), updateProduct);
+router.post("/", protect, upload.any(), createProduct);
+router.put("/:id", protect, upload.any(), updateProduct);
 router.delete("/:id", protect, deleteProduct);
 router.patch("/:id/publish", protect, publishProduct);
 router.patch("/:id/unpublish", protect, unpublishProduct);
-router.post("/:id/upload-image", protect, upload.single("image"), uploadProductImage);
+router.post("/:id/upload-image", protect, upload.any(), uploadProductImage);
 
 export default router;
