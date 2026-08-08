@@ -11,6 +11,8 @@ export interface IOrder extends Document {
   orderItems: IOrderItem[];
   totalPrice: number;
   status: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 const orderSchema = new mongoose.Schema<IOrder>(

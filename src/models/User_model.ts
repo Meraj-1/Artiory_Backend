@@ -9,6 +9,8 @@ export interface IUser extends Document {
   number?: string;
   gender?: string;
   roles?: string[];
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 const userSchema = new mongoose.Schema<IUser>(
