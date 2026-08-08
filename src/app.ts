@@ -53,10 +53,9 @@ app.use(
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.json({
-    message: "Artiory API Running"
-  });
+  res.json({ message: "Artiory API Running" });
 });
+app.get("/favicon.ico", (req, res) => res.status(204).end());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
