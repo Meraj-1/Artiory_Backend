@@ -7,7 +7,7 @@ node_modules/
 !.env.example
 
 # Build output
-dist/
+# dist/ — needed for Vercel deployment
 build/
 
 # Logs
