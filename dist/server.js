@@ -8,10 +8,13 @@ const app_1 = __importDefault(require("./app"));
 const db_1 = __importDefault(require("./config/db"));
 dotenv_1.default.config();
 const PORT = process.env.PORT || 5000;
-const startServer = async () => {
-    await (0, db_1.default)();
+// Connect to MongoDB
+(0, db_1.default)().catch((err) => {
+    console.error("Critical error during database initialization:", err);
+});
+if (!process.env.VERCEL) {
     app_1.default.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
     });
-};
-startServer();
+}
+exports.default = app_1.default;
