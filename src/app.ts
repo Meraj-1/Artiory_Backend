@@ -26,6 +26,9 @@ const allowedOrigins = [
   "https://artiory-dashboard.vercel.app",
   "https://artiory-frontend-murex.vercel.app",
   "https://artiory-backend.vercel.app",
+  "https://staging.artiory.com",
+  "https://admin.artiory.com",
+  "https://api.artiory.com",
 ];
 
 app.use(
@@ -46,13 +49,18 @@ app.use(
         return callback(null, true);
       }
 
+      // Allow artiory.com subdomains and primary domain
+      if (origin.endsWith(".artiory.com") || origin === "https://artiory.com") {
+        return callback(null, true);
+      }
+
       // Allow localhost on any port
       if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
         return callback(null, true);
       }
 
       console.warn(`Origin ${origin} not allowed by CORS`);
-      return callback(new Error("Not allowed by CORS"));
+      return callback(null, false);
     },
 
     credentials: true,
