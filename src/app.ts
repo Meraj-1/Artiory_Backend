@@ -13,35 +13,55 @@ import productRoutes from "./routes/product.routes";
 
 const app = express();
 
+
 const allowedOrigins = [
   "http://localhost:3000",
-  "http://127.0.0.1:3000",
   "http://localhost:3001",
-  "http://127.0.0.1:3001",
   "http://localhost:3002",
-  "http://127.0.0.1:3002",
   "http://localhost:5173",
-  "http://127.0.0.1:5173",
   "https://artiory-dashboard.vercel.app",
   "https://artiory-frontend-murex.vercel.app",
   "https://artiory-backend.vercel.app",
-  process.env.FRONTEND_URL,
-  process.env.DASHBOARD_URL,
-].filter(Boolean);
+];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      const isVercel = origin && (origin.endsWith(".vercel.app") || origin.includes("vercel.app"));
-      if (!origin || allowedOrigins.includes(origin) || isVercel || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-        callback(null, true);
-      } else {
-        console.warn(`Origin ${origin} not allowed by CORS`);
-        callback(null, false);
+      // Allow requests without Origin (Postman, server-to-server, etc.)
+      if (!origin) {
+        return callback(null, true);
       }
+
+      // Allow explicitly listed origins
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Allow Vercel deployments
+      if (origin.endsWith(".vercel.app")) {
+        return callback(null, true);
+      }
+
+      // Allow localhost on any port
+      if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      console.warn(`Origin ${origin} not allowed by CORS`);
+      return callback(new Error("Not allowed by CORS"));
     },
+
     credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+
     allowedHeaders: [
       "Content-Type",
       "Authorization",
@@ -49,7 +69,7 @@ app.use(
       "x-access-token",
       "token",
       "X-Requested-With",
-      "Accept"
+      "Accept",
     ],
   })
 );
