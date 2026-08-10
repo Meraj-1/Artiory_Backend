@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 
@@ -101,5 +101,26 @@ app.use("/api/combos", comboRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/coupons", couponRoutes);
+
+// Global Error Handler Middleware (ensures JSON responses and manual CORS headers on errors)
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error("Global Error Handler caught an error:", err);
+  
+  // Set CORS headers manually on error response to prevent browser CORS blocks
+  const origin = req.headers.origin;
+  const isVercel = origin && origin.endsWith(".vercel.app");
+  const isArtiory = origin && (origin.endsWith(".artiory.com") || origin === "https://artiory.com");
+  const isLocalhost = origin && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+  
+  if (origin && (isVercel || isArtiory || isLocalhost)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+  
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || "Internal Server Error",
+  });
+});
 
 export default app;
