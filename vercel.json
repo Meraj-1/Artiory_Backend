@@ -1,9 +1,24 @@
 {
   "version": 2,
+<<<<<<< HEAD
   "rewrites": [
     {
       "source": "/(.*)",
       "destination": "/api/index"
+=======
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "builds": [
+    {
+      "src": "dist/server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "dist/server.js"
+>>>>>>> 8eeb8862ae727f6588d8e0e1c4fd93ce02de3187
     }
   ]
 }
