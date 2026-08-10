@@ -77,6 +77,10 @@ const productSchema = new mongoose_1.Schema({
         type: Number,
         default: 0,
     },
+    reorderLevel: {
+        type: Number,
+        default: 5,
+    },
     shortDescription: {
         type: String,
         default: "",

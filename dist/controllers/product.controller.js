@@ -7,6 +7,7 @@ exports.uploadProductImage = exports.unpublishProduct = exports.publishProduct =
 const client_s3_1 = require("@aws-sdk/client-s3");
 const uuid_1 = require("uuid");
 const Product_model_1 = __importDefault(require("../models/Product_model"));
+const ComboProduct_model_1 = __importDefault(require("../models/ComboProduct_model"));
 const r2_1 = require("../config/r2");
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const isValidImageUrl = (value) => {
@@ -208,12 +209,11 @@ const getDashboardProducts = async (req, res) => {
             filter.published = false;
             filter.active = true;
         }
-        const skip = (Number(page) - 1) * Number(limit);
-        const [products, total] = await Promise.all([
-            Product_model_1.default.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
+        const [products, productsTotal] = await Promise.all([
+            Product_model_1.default.find(filter).sort({ createdAt: -1 }),
             Product_model_1.default.countDocuments(filter),
         ]);
-        const data = products.map((p) => {
+        const formattedProducts = products.map((p) => {
             const normalized = normalizeProductImageFields(p);
             return {
                 id: normalized._id,
@@ -225,11 +225,59 @@ const getDashboardProducts = async (req, res) => {
                 image: normalized.image || normalized.thumbnail || "",
                 images: Array.isArray(normalized.images) ? normalized.images : [],
                 stock: normalized.stockQuantity || 0,
+                createdAt: normalized.createdAt,
+                isCombo: false,
             };
         });
+        // Load combo products
+        let comboFilter = {};
+        if (search)
+            comboFilter.comboName = { $regex: search, $options: "i" };
+        if (status === "Published") {
+            comboFilter.published = true;
+        }
+        else if (status === "Draft") {
+            comboFilter.active = false;
+        }
+        else if (status === "Pending") {
+            comboFilter.published = false;
+            comboFilter.active = true;
+        }
+        const combos = await ComboProduct_model_1.default.find(comboFilter)
+            .populate("items.product", "thumbnail image images")
+            .sort({ createdAt: -1 });
+        const combosTotal = combos.length;
+        const formattedCombos = combos.map((c) => {
+            const firstProd = c.items[0]?.product;
+            const image = firstProd?.thumbnail || firstProd?.image || (firstProd?.images && firstProd.images[0]) || "/product/placeholder.svg";
+            const images = firstProd?.images || [];
+            return {
+                id: c._id,
+                name: c.comboName,
+                category: "Stationery Combo Set",
+                price: c.comboPrice,
+                status: c.published ? "Published" : !c.active ? "Draft" : "Pending",
+                date: c.createdAt?.toISOString?.().split("T")[0] || "",
+                image,
+                images,
+                stock: c.comboStock,
+                createdAt: c.createdAt,
+                isCombo: true,
+            };
+        });
+        const mergedData = [...formattedProducts, ...formattedCombos];
+        // Sort by date desc
+        mergedData.sort((a, b) => {
+            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return dateB - dateA;
+        });
+        const total = productsTotal + combosTotal;
+        const skip = (Number(page) - 1) * Number(limit);
+        const paginatedData = mergedData.slice(skip, skip + Number(limit));
         res.status(200).json({
             success: true,
-            data,
+            data: paginatedData,
             pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) },
         });
     }
@@ -273,14 +321,14 @@ exports.getProducts = getProducts;
 // GET /api/products/store  — only published products for frontend
 const getStoreProducts = async (req, res) => {
     try {
-        const { search, category, page = 1, limit = 20 } = req.query;
+        const { search, category, page = 1, limit = 1000 } = req.query;
         const filter = { published: true };
         if (category)
             filter.category = category;
         if (search)
             filter.productName = { $regex: search, $options: "i" };
         const skip = (Number(page) - 1) * Number(limit);
-        const [products, total] = await Promise.all([
+        const [products, productsTotal] = await Promise.all([
             Product_model_1.default.find(filter)
                 .select("productName category subCategory sellingPrice mrp thumbnail images stockQuantity skuCode shortDescription variants createdAt")
                 .sort({ createdAt: -1 })
@@ -288,7 +336,7 @@ const getStoreProducts = async (req, res) => {
                 .limit(Number(limit)),
             Product_model_1.default.countDocuments(filter),
         ]);
-        const data = products.map((product) => {
+        const formattedProducts = products.map((product) => {
             const normalized = normalizeProductImageFields(product);
             return {
                 _id: normalized._id,
@@ -301,11 +349,63 @@ const getStoreProducts = async (req, res) => {
                 image: normalized.image || normalized.thumbnail || "",
                 thumbnail: normalized.thumbnail || "",
                 images: Array.isArray(normalized.images) ? normalized.images : [],
+                stockQuantity: normalized.stockQuantity ?? 0,
+                skuCode: normalized.skuCode || "",
+                createdAt: normalized.createdAt,
+                isCombo: false
             };
         });
+        // Load combo products if category matches Stationery, Stationery Combo Set or is empty (All)
+        let comboData = [];
+        let combosTotal = 0;
+        const normalizedCategory = category ? category.toString().toLowerCase() : "";
+        const includesCombo = !category || normalizedCategory === "stationery" || normalizedCategory === "stationery combo set";
+        if (includesCombo) {
+            const comboFilter = { published: true };
+            if (search) {
+                comboFilter.comboName = { $regex: search, $options: "i" };
+            }
+            const combos = await ComboProduct_model_1.default.find(comboFilter)
+                .populate("items.product", "productName skuCode sellingPrice mrp thumbnail images stockQuantity")
+                .sort({ createdAt: -1 });
+            combosTotal = combos.length;
+            comboData = combos.map((c) => {
+                const mrp = c.items.reduce((sum, item) => {
+                    const prod = item.product;
+                    return sum + ((prod?.sellingPrice ?? prod?.price ?? 0) * (item.quantity || 1));
+                }, 0);
+                const firstProd = c.items[0]?.product;
+                const image = firstProd?.thumbnail || firstProd?.image || (firstProd?.images && firstProd.images[0]) || "/product/placeholder.svg";
+                const images = firstProd?.images || [];
+                return {
+                    _id: c._id,
+                    subCategory: "Stationery Combo Set",
+                    category: "Stationery",
+                    productName: c.comboName,
+                    shortDescription: c.comboDesc || "Special Combo Pack",
+                    sellingPrice: c.comboPrice,
+                    mrp: mrp || c.comboPrice,
+                    image,
+                    thumbnail: image,
+                    images,
+                    stockQuantity: c.comboStock,
+                    skuCode: c.comboSku,
+                    createdAt: c.createdAt,
+                    isCombo: true
+                };
+            });
+        }
+        const mergedData = [...formattedProducts, ...comboData];
+        // Sort by createdAt desc
+        mergedData.sort((a, b) => {
+            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return dateB - dateA;
+        });
+        const total = productsTotal + combosTotal;
         res.status(200).json({
             success: true,
-            data,
+            data: mergedData,
             pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) },
         });
     }
@@ -318,12 +418,46 @@ exports.getStoreProducts = getStoreProducts;
 // GET /api/products/:id
 const getProductById = async (req, res) => {
     try {
-        const product = await Product_model_1.default.findById(req.params.id);
-        if (!product) {
+        let product = await Product_model_1.default.findById(req.params.id);
+        if (product) {
+            res.status(200).json({ success: true, data: normalizeProductImageFields(product) });
+            return;
+        }
+        const combo = await ComboProduct_model_1.default.findById(req.params.id)
+            .populate("items.product", "productName skuCode sellingPrice mrp thumbnail images stockQuantity shortDescription detailedDescription");
+        if (!combo) {
             sendError(res, 404, "Product not found");
             return;
         }
-        res.status(200).json({ success: true, data: normalizeProductImageFields(product) });
+        const mrp = combo.items.reduce((sum, item) => {
+            const prod = item.product;
+            return sum + ((prod?.sellingPrice ?? prod?.price ?? 0) * (item.quantity || 1));
+        }, 0);
+        const firstProd = combo.items[0]?.product;
+        const image = firstProd?.thumbnail || firstProd?.image || (firstProd?.images && firstProd.images[0]) || "/product/placeholder.svg";
+        const images = firstProd?.images || [];
+        const formattedCombo = {
+            _id: combo._id,
+            productName: combo.comboName,
+            skuCode: combo.comboSku,
+            sellingPrice: combo.comboPrice,
+            mrp: mrp || combo.comboPrice,
+            stockQuantity: combo.comboStock,
+            category: "Stationery",
+            subCategory: "Stationery Combo Set",
+            shortDescription: combo.comboDesc || "Special Combo Pack",
+            detailedDescription: combo.comboDesc || "Special Combo Pack containing multiple curated items.",
+            thumbnail: image,
+            images,
+            variants: [],
+            weight: 0,
+            dimensions: {},
+            gst: 0,
+            isCombo: true,
+            active: combo.active,
+            published: combo.published,
+        };
+        res.status(200).json({ success: true, data: formattedCombo });
     }
     catch (err) {
         console.error(err);
@@ -420,11 +554,16 @@ exports.updateProduct = updateProduct;
 const deleteProduct = async (req, res) => {
     try {
         const deleted = await Product_model_1.default.findByIdAndDelete(req.params.id);
-        if (!deleted) {
+        if (deleted) {
+            res.status(200).json({ success: true, message: "Product deleted successfully" });
+            return;
+        }
+        const deletedCombo = await ComboProduct_model_1.default.findByIdAndDelete(req.params.id);
+        if (!deletedCombo) {
             sendError(res, 404, "Product not found");
             return;
         }
-        res.status(200).json({ success: true, message: "Product deleted successfully" });
+        res.status(200).json({ success: true, message: "Combo product deleted successfully" });
     }
     catch (err) {
         console.error(err);
@@ -435,12 +574,17 @@ exports.deleteProduct = deleteProduct;
 // PATCH /api/products/:id/publish
 const publishProduct = async (req, res) => {
     try {
-        const product = await Product_model_1.default.findByIdAndUpdate(req.params.id, { published: true, active: true }, { new: true });
-        if (!product) {
+        let product = await Product_model_1.default.findByIdAndUpdate(req.params.id, { published: true, active: true }, { new: true });
+        if (product) {
+            res.status(200).json({ success: true, message: "Product published", data: product });
+            return;
+        }
+        const combo = await ComboProduct_model_1.default.findByIdAndUpdate(req.params.id, { published: true, active: true }, { new: true });
+        if (!combo) {
             sendError(res, 404, "Product not found");
             return;
         }
-        res.status(200).json({ success: true, message: "Product published", data: product });
+        res.status(200).json({ success: true, message: "Combo product published", data: combo });
     }
     catch (err) {
         console.error(err);
@@ -451,12 +595,17 @@ exports.publishProduct = publishProduct;
 // PATCH /api/products/:id/unpublish
 const unpublishProduct = async (req, res) => {
     try {
-        const product = await Product_model_1.default.findByIdAndUpdate(req.params.id, { published: false }, { new: true });
-        if (!product) {
+        let product = await Product_model_1.default.findByIdAndUpdate(req.params.id, { published: false }, { new: true });
+        if (product) {
+            res.status(200).json({ success: true, message: "Product unpublished", data: product });
+            return;
+        }
+        const combo = await ComboProduct_model_1.default.findByIdAndUpdate(req.params.id, { published: false }, { new: true });
+        if (!combo) {
             sendError(res, 404, "Product not found");
             return;
         }
-        res.status(200).json({ success: true, message: "Product unpublished", data: product });
+        res.status(200).json({ success: true, message: "Combo product unpublished", data: combo });
     }
     catch (err) {
         console.error(err);
