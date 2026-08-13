@@ -31,60 +31,33 @@ const allowedOrigins = [
   "https://api.artiory.com",
 ];
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow requests without Origin (Postman, server-to-server, etc.)
-      if (!origin) {
-        return callback(null, true);
-      }
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin;
+  const isVercel = origin && origin.endsWith(".vercel.app");
+  const isArtiory = origin && (origin.endsWith(".artiory.com") || origin === "https://artiory.com");
+  const isLocalhost = origin && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 
-      // Allow explicitly listed origins
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+  if (origin && (isVercel || isArtiory || isLocalhost || allowedOrigins.includes(origin))) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    // If no origin or non-whitelisted request (e.g. server-to-server), fall back to wildcard
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
 
-      // Allow Vercel deployments
-      if (origin.endsWith(".vercel.app")) {
-        return callback(null, true);
-      }
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, x-auth-token, x-access-token, token, X-Requested-With, Accept"
+  );
 
-      // Allow artiory.com subdomains and primary domain
-      if (origin.endsWith(".artiory.com") || origin === "https://artiory.com") {
-        return callback(null, true);
-      }
+  // Instantly handle preflight OPTIONS requests
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
 
-      // Allow localhost on any port
-      if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-        return callback(null, true);
-      }
-
-      console.warn(`Origin ${origin} not allowed by CORS`);
-      return callback(null, false);
-    },
-
-    credentials: true,
-
-    methods: [
-      "GET",
-      "POST",
-      "PUT",
-      "PATCH",
-      "DELETE",
-      "OPTIONS",
-    ],
-
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "x-auth-token",
-      "x-access-token",
-      "token",
-      "X-Requested-With",
-      "Accept",
-    ],
-  })
-);
+  next();
+});
 app.use(express.json());
 
 app.get("/", (req, res) => {
