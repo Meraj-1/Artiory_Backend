@@ -4,7 +4,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
-const cors_1 = __importDefault(require("cors"));
 const dotenv_1 = __importDefault(require("dotenv"));
 // Load environment variables as early as possible so config modules can use them
 dotenv_1.default.config();
@@ -30,50 +29,27 @@ const allowedOrigins = [
     "https://admin.artiory.com",
     "https://api.artiory.com",
 ];
-app.use((0, cors_1.default)({
-    origin: (origin, callback) => {
-        // Allow requests without Origin (Postman, server-to-server, etc.)
-        if (!origin) {
-            return callback(null, true);
-        }
-        // Allow explicitly listed origins
-        if (allowedOrigins.includes(origin)) {
-            return callback(null, true);
-        }
-        // Allow Vercel deployments
-        if (origin.endsWith(".vercel.app")) {
-            return callback(null, true);
-        }
-        // Allow artiory.com subdomains and primary domain
-        if (origin.endsWith(".artiory.com") || origin === "https://artiory.com") {
-            return callback(null, true);
-        }
-        // Allow localhost on any port
-        if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-            return callback(null, true);
-        }
-        console.warn(`Origin ${origin} not allowed by CORS`);
-        return callback(null, false);
-    },
-    credentials: true,
-    methods: [
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS",
-    ],
-    allowedHeaders: [
-        "Content-Type",
-        "Authorization",
-        "x-auth-token",
-        "x-access-token",
-        "token",
-        "X-Requested-With",
-        "Accept",
-    ],
-}));
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    const isVercel = origin && origin.endsWith(".vercel.app");
+    const isArtiory = origin && (origin.endsWith(".artiory.com") || origin === "https://artiory.com");
+    const isLocalhost = origin && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    if (origin && (isVercel || isArtiory || isLocalhost || allowedOrigins.includes(origin))) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+    }
+    else {
+        // If no origin or non-whitelisted request (e.g. server-to-server), fall back to wildcard
+        res.setHeader("Access-Control-Allow-Origin", "*");
+    }
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-auth-token, x-access-token, token, X-Requested-With, Accept");
+    // Instantly handle preflight OPTIONS requests
+    if (req.method === "OPTIONS") {
+        return res.status(204).end();
+    }
+    next();
+});
 app.use(express_1.default.json());
 app.get("/", (req, res) => {
     res.json({ message: "Artiory API Running" });
