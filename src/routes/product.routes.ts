@@ -8,8 +8,8 @@ import {
   createProduct,
   updateProduct,
   deleteProduct,
-  publishProduct,
-  unpublishProduct,
+  listProduct,
+  unlistProduct,
   uploadProductImage,
 } from "../controllers/product.controller";
 import { protect } from "../middleware/auth_middleware";
@@ -27,8 +27,8 @@ router.get("/:id", getProductById);
 router.post("/", protect, upload.any(), createProduct);
 router.put("/:id", protect, upload.any(), updateProduct);
 router.delete("/:id", protect, deleteProduct);
-router.patch("/:id/publish", protect, publishProduct);
-router.patch("/:id/unpublish", protect, unpublishProduct);
+router.patch("/:id/list", protect, listProduct);
+router.patch("/:id/unlist", protect, unlistProduct);
 router.post("/:id/upload-image", protect, upload.any(), uploadProductImage);
 
 export default router;
