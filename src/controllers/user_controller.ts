@@ -259,3 +259,99 @@ export const deleteAddress = async (req: Request, res: Response): Promise<any> =
     return res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };
+
+export const getUserCart = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Not authorized" });
+    }
+
+    const fullUser = await User.findById(user._id);
+    return res.status(200).json({
+      success: true,
+      cart: fullUser?.cart || []
+    });
+  } catch (error) {
+    console.error("Get user cart error:", error);
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+export const syncUserCart = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Not authorized" });
+    }
+
+    const { cartItems } = req.body;
+    if (!Array.isArray(cartItems)) {
+      return res.status(400).json({ success: false, message: "cartItems must be an array" });
+    }
+
+    const fullUser = await User.findById(user._id);
+    if (!fullUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    fullUser.cart = cartItems;
+    await fullUser.save();
+
+    return res.status(200).json({
+      success: true,
+      cart: fullUser.cart
+    });
+  } catch (error) {
+    console.error("Sync user cart error:", error);
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+export const getUserWishlist = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Not authorized" });
+    }
+
+    const fullUser = await User.findById(user._id);
+    return res.status(200).json({
+      success: true,
+      wishlist: fullUser?.wishlist || []
+    });
+  } catch (error) {
+    console.error("Get user wishlist error:", error);
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+export const syncUserWishlist = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Not authorized" });
+    }
+
+    const { wishlistItems } = req.body;
+    if (!Array.isArray(wishlistItems)) {
+      return res.status(400).json({ success: false, message: "wishlistItems must be an array" });
+    }
+
+    const fullUser = await User.findById(user._id);
+    if (!fullUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    fullUser.wishlist = wishlistItems;
+    await fullUser.save();
+
+    return res.status(200).json({
+      success: true,
+      wishlist: fullUser.wishlist
+    });
+  } catch (error) {
+    console.error("Sync user wishlist error:", error);
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};

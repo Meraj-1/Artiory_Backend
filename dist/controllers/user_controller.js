@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteAddress = exports.updateAddress = exports.getAddresses = exports.AddAddress = exports.uploadProfileImage = void 0;
+exports.syncUserWishlist = exports.getUserWishlist = exports.syncUserCart = exports.getUserCart = exports.deleteAddress = exports.updateAddress = exports.getAddresses = exports.AddAddress = exports.uploadProfileImage = void 0;
 const client_s3_1 = require("@aws-sdk/client-s3");
 const r2_1 = require("../config/r2");
 const User_model_1 = __importDefault(require("../models/User_model"));
@@ -214,3 +214,93 @@ const deleteAddress = async (req, res) => {
     }
 };
 exports.deleteAddress = deleteAddress;
+const getUserCart = async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ success: false, message: "Not authorized" });
+        }
+        const fullUser = await User_model_1.default.findById(user._id);
+        return res.status(200).json({
+            success: true,
+            cart: fullUser?.cart || []
+        });
+    }
+    catch (error) {
+        console.error("Get user cart error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+exports.getUserCart = getUserCart;
+const syncUserCart = async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ success: false, message: "Not authorized" });
+        }
+        const { cartItems } = req.body;
+        if (!Array.isArray(cartItems)) {
+            return res.status(400).json({ success: false, message: "cartItems must be an array" });
+        }
+        const fullUser = await User_model_1.default.findById(user._id);
+        if (!fullUser) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+        fullUser.cart = cartItems;
+        await fullUser.save();
+        return res.status(200).json({
+            success: true,
+            cart: fullUser.cart
+        });
+    }
+    catch (error) {
+        console.error("Sync user cart error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+exports.syncUserCart = syncUserCart;
+const getUserWishlist = async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ success: false, message: "Not authorized" });
+        }
+        const fullUser = await User_model_1.default.findById(user._id);
+        return res.status(200).json({
+            success: true,
+            wishlist: fullUser?.wishlist || []
+        });
+    }
+    catch (error) {
+        console.error("Get user wishlist error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+exports.getUserWishlist = getUserWishlist;
+const syncUserWishlist = async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ success: false, message: "Not authorized" });
+        }
+        const { wishlistItems } = req.body;
+        if (!Array.isArray(wishlistItems)) {
+            return res.status(400).json({ success: false, message: "wishlistItems must be an array" });
+        }
+        const fullUser = await User_model_1.default.findById(user._id);
+        if (!fullUser) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+        fullUser.wishlist = wishlistItems;
+        await fullUser.save();
+        return res.status(200).json({
+            success: true,
+            wishlist: fullUser.wishlist
+        });
+    }
+    catch (error) {
+        console.error("Sync user wishlist error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+exports.syncUserWishlist = syncUserWishlist;
