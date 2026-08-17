@@ -606,8 +606,8 @@ export const deleteProduct = async (req: Request, res: Response): Promise<void> 
   }
 };
 
-// PATCH /api/products/:id/list
-export const listProduct = async (req: Request, res: Response): Promise<void> => {
+// PATCH /api/products/:id/publish
+export const publishProduct = async (req: Request, res: Response): Promise<void> => {
   try {
     let product = await Product.findByIdAndUpdate(
       req.params.id,
@@ -615,7 +615,7 @@ export const listProduct = async (req: Request, res: Response): Promise<void> =>
       { new: true }
     );
     if (product) {
-      res.status(200).json({ success: true, message: "Product listed", data: product });
+      res.status(200).json({ success: true, message: "Product published", data: product });
       return;
     }
 
@@ -625,33 +625,33 @@ export const listProduct = async (req: Request, res: Response): Promise<void> =>
       { new: true }
     );
     if (!combo) { sendError(res, 404, "Product not found"); return; }
-    res.status(200).json({ success: true, message: "Combo product listed", data: combo });
+    res.status(200).json({ success: true, message: "Combo product published", data: combo });
   } catch (err) {
     console.error(err);
     sendError(res, 500, "Server Error");
   }
 };
 
-// PATCH /api/products/:id/unlist
-export const unlistProduct = async (req: Request, res: Response): Promise<void> => {
+// PATCH /api/products/:id/unpublish
+export const unpublishProduct = async (req: Request, res: Response): Promise<void> => {
   try {
     let product = await Product.findByIdAndUpdate(
       req.params.id,
-      { published: false, active: false },
+      { published: false },
       { new: true }
     );
     if (product) {
-      res.status(200).json({ success: true, message: "Product unlisted", data: product });
+      res.status(200).json({ success: true, message: "Product unpublished", data: product });
       return;
     }
 
     const combo = await ComboProduct.findByIdAndUpdate(
       req.params.id,
-      { published: false, active: false },
+      { published: false },
       { new: true }
     );
     if (!combo) { sendError(res, 404, "Product not found"); return; }
-    res.status(200).json({ success: true, message: "Combo product unlisted", data: combo });
+    res.status(200).json({ success: true, message: "Combo product unpublished", data: combo });
   } catch (err) {
     console.error(err);
     sendError(res, 500, "Server Error");

@@ -14,6 +14,7 @@ import comboRoutes from "./routes/combo.routes";
 import inventoryRoutes from "./routes/inventory.routes";
 import customerRoutes from "./routes/customer.routes";
 import couponRoutes from "./routes/coupon.routes";
+import paymentRoutes from "./routes/payment.routes";
 
 const app = express();
 
@@ -74,6 +75,7 @@ app.use("/api/combos", comboRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/coupons", couponRoutes);
+app.use("/api/payment", paymentRoutes);
 
 // Global Error Handler Middleware (ensures JSON responses and manual CORS headers on errors)
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
