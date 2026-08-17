@@ -11,4 +11,10 @@ const router = (0, express_1.Router)();
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
 router.post("/profile-image", auth_middleware_1.protect, upload.single("image"), user_controller_1.uploadProfileImage);
 router.post("/address", auth_middleware_1.protect, user_controller_1.AddAddress);
+// Cart persists
+router.get("/cart", auth_middleware_1.protect, user_controller_1.getUserCart);
+router.post("/cart", auth_middleware_1.protect, user_controller_1.syncUserCart);
+// Wishlist persists
+router.get("/wishlist", auth_middleware_1.protect, user_controller_1.getUserWishlist);
+router.post("/wishlist", auth_middleware_1.protect, user_controller_1.syncUserWishlist);
 exports.default = router;
