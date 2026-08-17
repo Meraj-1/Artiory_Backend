@@ -16,6 +16,7 @@ const combo_routes_1 = __importDefault(require("./routes/combo.routes"));
 const inventory_routes_1 = __importDefault(require("./routes/inventory.routes"));
 const customer_routes_1 = __importDefault(require("./routes/customer.routes"));
 const coupon_routes_1 = __importDefault(require("./routes/coupon.routes"));
+const payment_routes_1 = __importDefault(require("./routes/payment.routes"));
 const app = (0, express_1.default)();
 const allowedOrigins = [
     "http://localhost:3000",
@@ -64,6 +65,7 @@ app.use("/api/combos", combo_routes_1.default);
 app.use("/api/inventory", inventory_routes_1.default);
 app.use("/api/customers", customer_routes_1.default);
 app.use("/api/coupons", coupon_routes_1.default);
+app.use("/api/payment", payment_routes_1.default);
 // Global Error Handler Middleware (ensures JSON responses and manual CORS headers on errors)
 app.use((err, req, res, next) => {
     console.error("Global Error Handler caught an error:", err);

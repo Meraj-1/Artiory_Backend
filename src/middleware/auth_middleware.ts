@@ -36,6 +36,7 @@ export const protect = async (
         return next();
       }
     } catch (error) {
+      console.error("JWT Verification Error:", error);
       if (token.startsWith("artiory-token-")) {
         const adminEmail = process.env.ADMIN_EMAIL || "admin@artiory.com";
         let adminUser = await User.findOne({ email: adminEmail });
