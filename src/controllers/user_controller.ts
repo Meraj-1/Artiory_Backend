@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { r2Client, R2_BUCKET_NAME, R2_PUBLIC_URL } from "../config/r2";
 import User from "../models/User_model";
+import Product from "../models/Product_model";
 import mongoose from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 
@@ -268,9 +269,46 @@ export const getUserCart = async (req: Request, res: Response): Promise<any> => 
     }
 
     const fullUser = await User.findById(user._id);
+    if (!fullUser || !fullUser.cart || fullUser.cart.length === 0) {
+      return res.status(200).json({ success: true, cart: [] });
+    }
+
+    const refreshedCart = await Promise.all(
+      fullUser.cart.map(async (item: any) => {
+        if (mongoose.Types.ObjectId.isValid(String(item.productId))) {
+          const product = await Product.findById(item.productId);
+          if (product) {
+            const currentStock = product.stockQuantity ?? 0;
+            let quantity = item.quantity;
+            if (quantity > currentStock) {
+              quantity = currentStock;
+            }
+            return {
+              ...item.toObject(),
+              stock: currentStock,
+              quantity: quantity
+            };
+          }
+        }
+        return item.toObject();
+      })
+    );
+
+    let needsSave = false;
+    for (let i = 0; i < fullUser.cart.length; i++) {
+      if (fullUser.cart[i].quantity !== refreshedCart[i].quantity) {
+        needsSave = true;
+        break;
+      }
+    }
+    if (needsSave) {
+      fullUser.cart = refreshedCart;
+      await fullUser.save();
+    }
+
     return res.status(200).json({
       success: true,
-      cart: fullUser?.cart || []
+      cart: refreshedCart
     });
   } catch (error) {
     console.error("Get user cart error:", error);
@@ -295,7 +333,31 @@ export const syncUserCart = async (req: Request, res: Response): Promise<any> =>
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    fullUser.cart = cartItems;
+    const validatedCartItems = await Promise.all(
+      cartItems.map(async (item: any) => {
+        if (mongoose.Types.ObjectId.isValid(String(item.productId))) {
+          const product = await Product.findById(item.productId);
+          if (product) {
+            const currentStock = product.stockQuantity ?? 0;
+            let quantity = item.quantity;
+            if (quantity > currentStock) {
+              quantity = currentStock;
+            }
+            return {
+              productId: item.productId,
+              name: item.name || product.productName,
+              price: item.price || product.sellingPrice || 0,
+              image: item.image || product.thumbnail || "",
+              quantity: quantity,
+              stock: currentStock
+            };
+          }
+        }
+        return item;
+      })
+    );
+
+    fullUser.cart = validatedCartItems;
     await fullUser.save();
 
     return res.status(200).json({
