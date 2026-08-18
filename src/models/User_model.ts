@@ -15,6 +15,7 @@ export interface IUser extends Document {
     price: number;
     image: string;
     quantity: number;
+    stock?: number;
   }[];
   wishlist?: {
     productId: string;
@@ -68,7 +69,8 @@ const userSchema = new mongoose.Schema<IUser>(
         name: { type: String, required: true },
         price: { type: Number, required: true },
         image: { type: String, required: true },
-        quantity: { type: Number, required: true, default: 1 }
+        quantity: { type: Number, required: true, default: 1 },
+        stock: { type: Number }
       }
     ],
     wishlist: [

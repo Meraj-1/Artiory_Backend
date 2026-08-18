@@ -1,5 +1,7 @@
 import { Request, Response } from "express";
 import Order from "../models/Order_model";
+import Product from "../models/Product_model";
+import User from "../models/User_model";
 
 
 export const createOrder = async (
@@ -13,6 +15,28 @@ export const createOrder = async (
       return res.status(400).json({ message: "No order items" });
     }
 
+    // 1. Atomic stock validation for all ordered products
+    for (const item of orderItems) {
+      const product = await Product.findById(item.productId);
+      if (!product) {
+        return res.status(404).json({ message: `Product "${item.name}" not found` });
+      }
+      const currentStock = product.stockQuantity ?? 0;
+      if (item.qty > currentStock) {
+        return res.status(400).json({
+          message: `Insufficient stock for product "${product.productName}". Only ${currentStock} items left in stock!`
+        });
+      }
+    }
+
+    // 2. Decrement stock counts in the database
+    for (const item of orderItems) {
+      await Product.findByIdAndUpdate(item.productId, {
+        $inc: { stockQuantity: -item.qty }
+      });
+    }
+
+    // 3. Save order document
     const order = new Order({
       user: req.user?._id as any,
       orderItems,
@@ -20,6 +44,13 @@ export const createOrder = async (
     });
 
     const createdOrder = await order.save();
+
+    // 4. Reset user cart dynamically
+    if (req.user?._id) {
+      await User.findByIdAndUpdate(req.user._id, {
+        $set: { cart: [] }
+      });
+    }
 
     res.status(201).json(createdOrder);
   } catch (error) {
