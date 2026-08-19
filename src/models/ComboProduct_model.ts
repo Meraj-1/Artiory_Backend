@@ -16,6 +16,7 @@ export interface IComboProduct extends Document {
   comboStock: number;
   reorderLevel?: number;
   items: IComboItem[];
+  deletedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -78,6 +79,10 @@ const comboProductSchema = new Schema<IComboProduct>(
         },
       },
     ],
+    deletedAt: {
+      type: Date,
+      index: { expires: '7d' },
+    },
   },
   {
     timestamps: true,

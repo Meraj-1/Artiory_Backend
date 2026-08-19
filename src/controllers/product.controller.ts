@@ -243,6 +243,7 @@ export const getDashboardProducts = async (req: Request, res: Response): Promise
         images: Array.isArray(normalized.images) ? normalized.images : [],
         stock: normalized.stockQuantity || 0,
         createdAt: normalized.createdAt,
+        deletedAt: normalized.deletedAt || null,
         isCombo: false,
       };
     });
@@ -276,6 +277,7 @@ export const getDashboardProducts = async (req: Request, res: Response): Promise
         images,
         stock: c.comboStock,
         createdAt: c.createdAt,
+        deletedAt: c.deletedAt || null,
         isCombo: true,
       };
     });
@@ -579,6 +581,11 @@ export const updateProduct = async (req: Request, res: Response): Promise<void> 
       payload.images = mergedImages;
     }
 
+    if (payload.active === true) {
+      payload.$unset = { deletedAt: "" };
+      delete payload.deletedAt;
+    }
+
     const updated = await Product.findByIdAndUpdate(req.params.id, payload, { new: true });
     const normalizedUpdatedProduct = normalizeProductImageFields(updated);
     res.status(200).json({ success: true, message: "Product updated successfully", data: normalizedUpdatedProduct });
@@ -588,30 +595,38 @@ export const updateProduct = async (req: Request, res: Response): Promise<void> 
   }
 };
 
-// DELETE /api/products/:id
+// DELETE /api/products/:id (Soft Delete to Draft)
 export const deleteProduct = async (req: Request, res: Response): Promise<void> => {
   try {
-    const deleted = await Product.findByIdAndDelete(req.params.id);
+    const deleted = await Product.findByIdAndUpdate(
+      req.params.id,
+      { active: false, published: false, deletedAt: new Date() },
+      { new: true }
+    );
     if (deleted) {
-      res.status(200).json({ success: true, message: "Product deleted successfully" });
+      res.status(200).json({ success: true, message: "Product moved to draft successfully" });
       return;
     }
 
-    const deletedCombo = await ComboProduct.findByIdAndDelete(req.params.id);
+    const deletedCombo = await ComboProduct.findByIdAndUpdate(
+      req.params.id,
+      { active: false, published: false, deletedAt: new Date() },
+      { new: true }
+    );
     if (!deletedCombo) { sendError(res, 404, "Product not found"); return; }
-    res.status(200).json({ success: true, message: "Combo product deleted successfully" });
+    res.status(200).json({ success: true, message: "Combo product moved to draft successfully" });
   } catch (err) {
     console.error(err);
     sendError(res, 500, "Server Error");
   }
 };
 
-// PATCH /api/products/:id/publish
+// PATCH /api/products/:id/publish (Publish / Recover)
 export const publishProduct = async (req: Request, res: Response): Promise<void> => {
   try {
     let product = await Product.findByIdAndUpdate(
       req.params.id,
-      { published: true, active: true },
+      { published: true, active: true, $unset: { deletedAt: "" } },
       { new: true }
     );
     if (product) {
@@ -621,7 +636,7 @@ export const publishProduct = async (req: Request, res: Response): Promise<void>
 
     const combo = await ComboProduct.findByIdAndUpdate(
       req.params.id,
-      { published: true, active: true },
+      { published: true, active: true, $unset: { deletedAt: "" } },
       { new: true }
     );
     if (!combo) { sendError(res, 404, "Product not found"); return; }

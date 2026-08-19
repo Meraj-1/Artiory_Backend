@@ -32,6 +32,7 @@ export interface IProduct extends Document {
   published: boolean;
   thumbnail?: string;
   images?: string[];
+  deletedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -118,6 +119,10 @@ const productSchema = new Schema<IProduct>(
       default: "",
     },
     images: [{ type: String }],
+    deletedAt: {
+      type: Date,
+      index: { expires: '7d' },
+    },
   },
   {
     timestamps: true,

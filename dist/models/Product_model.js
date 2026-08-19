@@ -115,6 +115,10 @@ const productSchema = new mongoose_1.Schema({
         default: "",
     },
     images: [{ type: String }],
+    deletedAt: {
+        type: Date,
+        index: { expires: '7d' },
+    },
 }, {
     timestamps: true,
 });
