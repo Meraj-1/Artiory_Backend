@@ -91,6 +91,10 @@ const comboProductSchema = new mongoose_1.Schema({
             },
         },
     ],
+    deletedAt: {
+        type: Date,
+        index: { expires: '7d' },
+    },
 }, {
     timestamps: true,
 });
