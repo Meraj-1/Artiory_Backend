@@ -193,7 +193,7 @@ const sendError = (res, status, message) => res.status(status).json({ success: f
 // GET /api/products/dashboard?search=&category=&status=&page=&limit=
 const getDashboardProducts = async (req, res) => {
     try {
-        const { search, category, status, page = 1, limit = 20 } = req.query;
+        const { search, category, status, page = 1, limit = 1000 } = req.query;
         const filter = {};
         if (category)
             filter.category = category;

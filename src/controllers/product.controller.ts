@@ -216,7 +216,7 @@ const sendError = (res: Response, status: number, message: string) =>
 // GET /api/products/dashboard?search=&category=&status=&page=&limit=
 export const getDashboardProducts = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { search, category, status, page = 1, limit = 20 } = req.query;
+    const { search, category, status, page = 1, limit = 1000 } = req.query;
 
     const filter: Record<string, any> = {};
     if (category) filter.category = category;
