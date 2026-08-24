@@ -45,13 +45,6 @@ export const createOrder = async (
 
     const createdOrder = await order.save();
 
-    // 4. Reset user cart dynamically
-    if (req.user?._id) {
-      await User.findByIdAndUpdate(req.user._id, {
-        $set: { cart: [] }
-      });
-    }
-
     res.status(201).json(createdOrder);
   } catch (error) {
     console.error("Create Order Error:", error);
@@ -92,5 +85,94 @@ export const getOrderById = async (
     }
   } catch (error) {
     res.status(500).json({ message: "Server Error" });
+  }
+};
+
+import { querySabPaisaStatus } from "./payment_controller";
+
+export const getAllOrders = async (
+  req: Request,
+  res: Response
+): Promise<any> => {
+  try {
+    // 1. Fetch all orders
+    const allOrders = await Order.find()
+      .populate("user", "name email number")
+      .sort({ createdAt: -1 });
+
+    // 2. Reconcile any Pending orders that have a clientTxnId directly from SabPaisa
+    const pendingOrdersToReconcile = allOrders.filter(
+      (order) => order.status === "Pending" && order.clientTxnId
+    );
+
+    if (pendingOrdersToReconcile.length > 0) {
+      await Promise.all(
+        pendingOrdersToReconcile.map(async (order) => {
+          try {
+            const status = await querySabPaisaStatus(order.clientTxnId!, order.totalPrice);
+            if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000") {
+              order.status = "Paid";
+              await order.save();
+              console.log(`Reconciled Order ${order._id} dynamically: status set to Paid`);
+            } else if (
+              status === "EXPIRED" ||
+              status === "FAILED" ||
+              status === "0300" ||
+              status === "0200"
+            ) {
+              order.status = "Failed";
+              await order.save();
+              console.log(`Reconciled Order ${order._id} dynamically: status set to Failed (Expired/Failed on gateway)`);
+            }
+          } catch (err) {
+            console.error(`Reconciliation failed for order ${order._id}:`, err);
+          }
+        })
+      );
+    }
+
+    // 3. Return only paid or delivered orders to dashboard
+    const paidOrders = allOrders.filter((order) =>
+      ["Paid", "Delivered"].includes(order.status)
+    );
+
+    res.status(200).json({ success: true, data: paidOrders });
+  } catch (error) {
+    console.error("Get All Orders Error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+export const reconcileOrder = async (
+  req: Request,
+  res: Response
+): Promise<any> => {
+  try {
+    const { orderId, clientTxnId } = req.body;
+    if (!orderId || !clientTxnId) {
+      return res.status(400).json({ success: false, message: "orderId and clientTxnId are required" });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    order.clientTxnId = clientTxnId;
+    const status = await querySabPaisaStatus(clientTxnId, order.totalPrice);
+    if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000") {
+      order.status = "Paid";
+      await order.save();
+      return res.status(200).json({ success: true, message: "Order reconciled successfully to Paid!", status: order.status });
+    } else {
+      if (status === "EXPIRED" || status === "FAILED" || status === "0300" || status === "0200") {
+        order.status = "Failed";
+      }
+      await order.save();
+      return res.status(400).json({ success: false, message: `SabPaisa returned status: ${status}`, status });
+    }
+  } catch (error: any) {
+    console.error("Reconcile Order Error:", error);
+    res.status(500).json({ success: false, message: "Server Error", error: error.message });
   }
 };

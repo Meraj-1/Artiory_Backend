@@ -15,6 +15,7 @@ import inventoryRoutes from "./routes/inventory.routes";
 import customerRoutes from "./routes/customer.routes";
 import couponRoutes from "./routes/coupon.routes";
 import paymentRoutes from "./routes/payment.routes";
+import logisticsRoutes from "./routes/logistics.routes";
 
 const app = express();
 
@@ -76,6 +77,7 @@ app.use("/api/inventory", inventoryRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/payment", paymentRoutes);
+app.use("/api/logistics", logisticsRoutes);
 
 // Global Error Handler Middleware (ensures JSON responses and manual CORS headers on errors)
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {

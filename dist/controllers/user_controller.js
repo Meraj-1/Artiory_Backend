@@ -50,7 +50,7 @@ const AddAddress = async (req, res) => {
         if (!user) {
             return res.status(401).json({ success: false, message: "Not authorized" });
         }
-        const { home, street, city, state, postalCode, country, phone, } = req.body;
+        const { type, home, street, city, state, postalCode, country, phone, } = req.body;
         // Validation
         if (!home ||
             !street ||
@@ -66,6 +66,7 @@ const AddAddress = async (req, res) => {
         }
         const address = {
             userId: user._id,
+            type: type || "Home",
             home,
             street,
             city,

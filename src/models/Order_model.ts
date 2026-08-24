@@ -12,6 +12,12 @@ export interface IOrder extends Document {
   orderItems: IOrderItem[];
   totalPrice: number;
   status: string;
+  awbNumber?: string;
+  courierName?: string;
+  logisticsOrderId?: string;
+  shipmentStatus: string;
+  shippingLabelUrl?: string;
+  clientTxnId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -40,6 +46,26 @@ const orderSchema = new mongoose.Schema<IOrder>(
       type: String,
       required: true,
       default: "Pending", // Pending, Paid, Delivered, Cancelled
+    },
+    awbNumber: {
+      type: String
+    },
+    courierName: {
+      type: String
+    },
+    logisticsOrderId: {
+      type: String
+    },
+    shipmentStatus: {
+      type: String,
+      required: true,
+      default: "Unshipped" // Unshipped, Shipped, In-Transit, Delivered, RTO
+    },
+    shippingLabelUrl: {
+      type: String
+    },
+    clientTxnId: {
+      type: String
     }
   },
   {

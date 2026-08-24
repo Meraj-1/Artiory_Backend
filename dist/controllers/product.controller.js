@@ -90,9 +90,24 @@ const buildProductPayload = (body) => {
             dimensions = JSON.parse(dimensions);
         }
         catch (e) {
-            dimensions = {};
+            // Parse plain text dimensions like "30x20x10" or "30*20*10"
+            const cleaned = dimensions.replace(/[^0-9.x*×]/gi, "");
+            const parts = cleaned.split(/[x*×]/i);
+            if (parts.length >= 3) {
+                dimensions = {
+                    length: Number(parts[0]) || 10,
+                    width: Number(parts[1]) || 10,
+                    height: Number(parts[2]) || 10,
+                };
+            }
+            else {
+                dimensions = {};
+            }
         }
     }
+    // Auto-convert grams (>5) to kg, otherwise keep kg input
+    const rawWeight = Number(body.weight || 0);
+    const normalizedWeight = rawWeight > 5 ? rawWeight / 1000 : rawWeight;
     const payload = {
         productName: body.productName || body.name || "",
         skuCode: (body.skuCode || body.sku || "").toString().trim().toUpperCase(),
@@ -113,7 +128,7 @@ const buildProductPayload = (body) => {
         stockQuantity: Number(body.stockQuantity ?? body.stock ?? 0),
         shortDescription: body.shortDescription || body.shortDesc || "",
         detailedDescription: body.detailedDescription || body.detailedDesc || "",
-        weight: Number(body.weight || 0),
+        weight: normalizedWeight,
         dimensions: typeof dimensions === "object" ? dimensions : {},
         gst: Number(body.gst || 0),
         active: body.active !== undefined ? body.active : true,
