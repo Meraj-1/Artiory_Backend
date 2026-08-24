@@ -62,6 +62,7 @@ export const AddAddress = async (req: Request, res: Response): Promise<any> => {
     }
 
     const {
+      type,
       home,
       street,
       city,
@@ -89,6 +90,7 @@ export const AddAddress = async (req: Request, res: Response): Promise<any> => {
 
     const address = {
       userId: user._id,
+      type: type || "Home",
       home,
       street,
       city,

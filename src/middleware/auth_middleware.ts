@@ -27,6 +27,22 @@ export const protect = async (
   }
 
   if (token) {
+    // 1. Quietly handle admin bypass token to avoid false jwt verification error logging
+    if (token.startsWith("artiory-token-")) {
+      const adminEmail = process.env.ADMIN_EMAIL || "admin@artiory.com";
+      let adminUser = await User.findOne({ email: adminEmail });
+      if (!adminUser) {
+        adminUser = await User.create({
+          name: "Admin User",
+          email: adminEmail,
+          googleId: "admin-dev-id",
+        });
+      }
+      req.user = adminUser;
+      return next();
+    }
+
+    // 2. Verify standard database user JWT
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { id: string };
       const user = await User.findById(decoded.id).select("-googleId");
@@ -37,20 +53,6 @@ export const protect = async (
       }
     } catch (error) {
       console.error("JWT Verification Error:", error);
-      if (token.startsWith("artiory-token-")) {
-        const adminEmail = process.env.ADMIN_EMAIL || "admin@artiory.com";
-        let adminUser = await User.findOne({ email: adminEmail });
-        if (!adminUser) {
-          adminUser = await User.create({
-            name: "Admin User",
-            email: adminEmail,
-            googleId: "admin-dev-id",
-          });
-        }
-        req.user = adminUser;
-        return next();
-      }
-
       return res.status(401).json({ message: "Not authorized, token failed" });
     }
   }

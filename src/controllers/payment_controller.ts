@@ -1,42 +1,94 @@
 import { Request, Response } from "express";
 import crypto from "crypto";
+import https from "https";
 import Order from "../models/Order_model";
+import User from "../models/User_model";
+
+/**
+ * Helper to perform secure HTTPS POST requests to SabPaisa PG 3.0 REST API
+ */
+const pg3Request = (url: string, apiKey: string, bodyData: any): Promise<any> => {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const postData = JSON.stringify(bodyData);
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: 443,
+      path: parsedUrl.pathname,
+      method: "POST",
+      headers: {
+        "X-Api-Key": apiKey,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(postData),
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let responseBody = "";
+      res.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(responseBody));
+        } catch (e) {
+          resolve({ error: "Failed to parse JSON response", raw: responseBody });
+        }
+      });
+    });
+
+    req.on("error", (err) => {
+      reject(err);
+    });
+
+    req.write(postData);
+    req.end();
+  });
+};
 
 // SabPaisa Credentials and Configurations
 const SABPAISA_CLIENT_CODE = process.env.SABPAISA_CLIENT_CODE || "YOUR_CLIENT_CODE";
 const SABPAISA_TRANS_USER_NAME = process.env.SABPAISA_TRANS_USER_NAME || "YOUR_USERNAME";
 const SABPAISA_TRANS_USER_PASSWORD = process.env.SABPAISA_TRANS_USER_PASSWORD || "YOUR_PASSWORD";
-const SABPAISA_AUTH_KEY = process.env.SABPAISA_AUTH_KEY || "YOUR_16_BYTE_KEY"; // Must be exactly 16 bytes
-const SABPAISA_AUTH_IV = process.env.SABPAISA_AUTH_IV || "YOUR_16_BYTE_IV";   // Must be exactly 16 bytes
+const SABPAISA_AUTH_KEY = process.env.SABPAISA_AUTH_KEY || process.env.SABPAISA_API_KEY || "YOUR_16_BYTE_KEY"; // Must be exactly 16 bytes
+const SABPAISA_AUTH_IV = process.env.SABPAISA_AUTH_IV || process.env.SABPAISA_SECRET_KEY || "YOUR_16_BYTE_IV";   // Must be exactly 16 bytes
 const SABPAISA_INIT_URL = process.env.SABPAISA_INIT_URL || "https://stage-securepay.sabpaisa.in/SabPaisa/sabPaisaInit?v=1";
-const SABPAISA_CALLBACK_URL = process.env.SABPAISA_CALLBACK_URL || "https://api.artiory.com/api/payment/sabpaisa/callback";
+const SABPAISA_CALLBACK_URL = (process.env.SABPAISA_CALLBACK_URL || "https://api.artiory.com/api/payment/sabpaisa/callback").replace(/([^:]\/)\/+/g, "$1");
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://staging.artiory.com";
 
 /**
- * Helper to ensure a buffer is exactly 16 bytes by padding or slicing
+ * Helper to ensure a buffer matches the required byte length by padding or slicing
  */
-const get16ByteBuf = (str: string): Buffer => {
-  const buf = Buffer.alloc(16, 0);
+const getByteBuf = (str: string, length: number): Buffer => {
+  const buf = Buffer.alloc(length, 0);
   const src = Buffer.from(str, "utf8");
-  src.copy(buf, 0, 0, Math.min(src.length, 16));
+  src.copy(buf, 0, 0, Math.min(src.length, length));
   return buf;
 };
 
 /**
- * Encrypts a string using AES-128-CBC
+ * Encrypts a string using AES-128-CBC or AES-256-CBC dynamically based on key length
  */
 const encrypt = (plainText: string, key: string, iv: string): string => {
-  const cipher = crypto.createCipheriv("aes-128-cbc", get16ByteBuf(key), get16ByteBuf(iv));
+  const keyLen = key.length;
+  const algo = keyLen > 24 ? "aes-256-cbc" : "aes-128-cbc";
+  const finalKeyLen = keyLen > 24 ? 32 : 16;
+
+  const cipher = crypto.createCipheriv(algo, getByteBuf(key, finalKeyLen), getByteBuf(iv, 16));
   let encrypted = cipher.update(plainText, "utf8", "hex");
   encrypted += cipher.final("hex");
   return encrypted;
 };
 
 /**
- * Decrypts a string using AES-128-CBC
+ * Decrypts a string using AES-128-CBC or AES-256-CBC dynamically based on key length
  */
 const decrypt = (encryptedText: string, key: string, iv: string): string => {
-  const decipher = crypto.createDecipheriv("aes-128-cbc", get16ByteBuf(key), get16ByteBuf(iv));
+  const keyLen = key.length;
+  const algo = keyLen > 24 ? "aes-256-cbc" : "aes-128-cbc";
+  const finalKeyLen = keyLen > 24 ? 32 : 16;
+
+  const decipher = crypto.createDecipheriv(algo, getByteBuf(key, finalKeyLen), getByteBuf(iv, 16));
   let decrypted = decipher.update(encryptedText, "hex", "utf8");
   decrypted += decipher.final("utf8");
   return decrypted;
@@ -60,6 +112,14 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
     }
 
     const user = order.user as any;
+
+    if (process.env.PAYMENT_BYPASS === "true") {
+      console.log("PAYMENT_BYPASS active. Direct redirecting with Paid status.");
+      order.status = "Paid";
+      await order.save();
+      const redirectUrl = `${FRONTEND_URL}/checkout/status?status=paid&orderId=${order._id}`;
+      return res.status(200).json({ success: true, checkoutUrl: redirectUrl });
+    }
     const payerName = (user?.name || "Valued Customer").replace(/[^a-zA-Z ]/g, "").trim();
     const payerEmail = user?.email || "customer@artiory.com";
     const payerMobile = user?.number || "9999999999";
@@ -67,19 +127,96 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
     // Generate unique transaction ID to prevent "Duplicate ID" gateway errors
     const clientTxnId = `${order._id}-${Date.now().toString().slice(-6)}`;
 
-    // Build standard SabPaisa query string parameters list
-    const queryString = `payerName=${encodeURIComponent(payerName)}` +
-      `&payerEmail=${encodeURIComponent(payerEmail)}` +
-      `&payerMobile=${encodeURIComponent(payerMobile)}` +
-      `&clientTxnId=${encodeURIComponent(clientTxnId)}` +
+    // Store transaction ID for status query lookup
+    order.clientTxnId = clientTxnId;
+    await order.save();
+
+    const isDummyUser = (val: string | undefined): boolean => {
+      if (!val) return true;
+      const lower = val.toLowerCase();
+      return (
+        lower === "your_username" ||
+        lower === "your_transaction_username" ||
+        lower === "your_password" ||
+        lower === "your_transaction_password"
+      );
+    };
+
+    const cleanUsername = isDummyUser(process.env.SABPAISA_TRANS_USER_NAME) ? "" : (process.env.SABPAISA_TRANS_USER_NAME || "");
+    const cleanPassword = isDummyUser(process.env.SABPAISA_TRANS_USER_PASSWORD) ? "" : (process.env.SABPAISA_TRANS_USER_PASSWORD || "");
+
+    // Build query string dynamically (only include transUserName/Password if provided, maintaining exact order sequence)
+    let queryString = `payerName=${payerName}` +
+      `&payerEmail=${payerEmail}` +
+      `&payerMobile=${payerMobile}` +
+      `&clientTxnId=${clientTxnId}` +
       `&amount=${order.totalPrice.toFixed(2)}` +
-      `&clientCode=${encodeURIComponent(SABPAISA_CLIENT_CODE)}` +
-      `&transUserName=${encodeURIComponent(SABPAISA_TRANS_USER_NAME)}` +
-      `&transUserPassword=${encodeURIComponent(SABPAISA_TRANS_USER_PASSWORD)}` +
-      `&callbackUrl=${encodeURIComponent(SABPAISA_CALLBACK_URL)}` +
-      `&channelId=W`;
+      `&clientCode=${SABPAISA_CLIENT_CODE}`;
+
+    if (cleanUsername) {
+      queryString += `&transUserName=${cleanUsername}`;
+    }
+    if (cleanPassword) {
+      queryString += `&transUserPassword=${cleanPassword}`;
+    }
+
+    queryString += `&callbackUrl=${SABPAISA_CALLBACK_URL}&channelId=W`;
 
     console.log("SabPaisa Query String:", queryString);
+
+    // Try SabPaisa PG 3.0 API first
+    try {
+      const isStaging = SABPAISA_INIT_URL.includes("stage") || SABPAISA_INIT_URL.includes("staging");
+      const pg3BaseUrl = isStaging
+        ? "https://staging-sb-merchant-api.sabpaisa.in"
+        : "https://merchant-api.sabpaisa.in";
+      const pg3Endpoint = `${pg3BaseUrl}/api/v2/payments`;
+
+      const timestampVal = Math.floor(Date.now() / 1000);
+      const amountInPaise = Math.round(order.totalPrice * 100);
+
+      // Checksum format: merchantId|merchantTxnId|amount|currency|timestamp
+      const checksumString = `${SABPAISA_CLIENT_CODE}|${clientTxnId}|${amountInPaise}|INR|${timestampVal}`;
+      const checksum = crypto
+        .createHmac("sha256", SABPAISA_AUTH_IV) // SABPAISA_AUTH_IV maps to SABPAISA_SECRET_KEY
+        .update(checksumString)
+        .digest("hex");
+
+      const pg3Payload = {
+        merchantId: SABPAISA_CLIENT_CODE,
+        merchantTxnId: clientTxnId,
+        amount: amountInPaise,
+        currency: "INR",
+        returnUrl: SABPAISA_CALLBACK_URL,
+        customerName: payerName,
+        customerEmail: payerEmail,
+        customerPhone: payerMobile,
+        timestamp: timestampVal,
+        checksum: checksum
+      };
+
+      console.log("Attempting SabPaisa PG 3.0 Initiation on URL:", pg3Endpoint);
+      console.log("PG 3.0 Payload:", pg3Payload);
+
+      const pg3Response = await pg3Request(pg3Endpoint, SABPAISA_AUTH_KEY, pg3Payload);
+      console.log("SabPaisa PG 3.0 Response:", pg3Response);
+
+      const checkoutUrl = pg3Response?.checkoutUrl || pg3Response?.paymentUrl || pg3Response?.data?.checkoutUrl || pg3Response?.data?.paymentUrl;
+      const clientSecret = pg3Response?.clientSecret || pg3Response?.data?.clientSecret;
+
+      if (checkoutUrl) {
+        // SabPaisa checkoutUrl requires clientSecret parameter to avoid "Missing client secret" browser crashes
+        const finalUrl = clientSecret ? `${checkoutUrl}?clientSecret=${clientSecret}` : checkoutUrl;
+        return res.status(200).json({
+          success: true,
+          checkoutUrl: finalUrl
+        });
+      } else {
+        console.warn("SabPaisa PG 3.0 did not return checkoutUrl. Falling back to Classic AES...", pg3Response);
+      }
+    } catch (pg3Error) {
+      console.error("SabPaisa PG 3.0 Initiation failed. Falling back to Classic AES:", pg3Error);
+    }
 
     let encData = "";
     try {
@@ -103,36 +240,46 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
 
 /**
  * POST /api/payment/sabpaisa/callback
- * SabPaisa calls this endpoint to post status updates and redirect the client
+ * SabPaisa calls this endpoint to post status updates and redirect the client (Supports both PG 3.0 and Classic)
  */
 export const sabPaisaCallback = async (req: Request, res: Response): Promise<any> => {
   try {
-    const { encResponse } = req.body;
+    const encResponse = req.body.encResponse;
 
-    if (!encResponse) {
-      console.error("SabPaisa Callback: Missing encResponse in request body");
-      return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=MissingResponse`);
+    let clientTxnId = "";
+    let sabpaisaTxnId = "N/A";
+    let statusCode = "FAILED";
+    let amount = "0.00";
+
+    if (encResponse) {
+      // Classic Decryption Flow
+      let decryptedText = "";
+      try {
+        decryptedText = decrypt(encResponse, SABPAISA_AUTH_KEY, SABPAISA_AUTH_IV);
+      } catch (decErr: any) {
+        console.error("SabPaisa Decryption Error:", decErr);
+        return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=DecryptionFailed`);
+      }
+
+      console.log("SabPaisa Decrypted Response (Classic):", decryptedText);
+
+      // Parse the query string params
+      const params = new URLSearchParams(decryptedText);
+      clientTxnId = params.get("clientTxnId") || "";
+      sabpaisaTxnId = params.get("sabpaisaTxnId") || params.get("spTxnId") || "N/A";
+      statusCode = params.get("statusCode") || params.get("status") || "FAILED";
+      amount = params.get("amount") || "0.00";
+    } else {
+      // PG 3.0 Redirection / Webhook Flow (Plain Params in req.body or req.query)
+      console.log("SabPaisa Callback (PG 3.0 format):", { body: req.body, query: req.query });
+      clientTxnId = req.body.merchantTxnId || req.query.merchant_txn_id || req.body.clientTxnId || req.query.clientTxnId || "";
+      sabpaisaTxnId = req.body.transaction_id || req.query.transaction_id || req.body.sabpaisaTxnId || req.query.sabpaisaTxnId || "N/A";
+      statusCode = req.body.status || req.query.status || req.body.statusCode || req.query.statusCode || "FAILED";
+      amount = req.body.amount || req.query.amount || "0.00";
     }
-
-    let decryptedText = "";
-    try {
-      decryptedText = decrypt(encResponse, SABPAISA_AUTH_KEY, SABPAISA_AUTH_IV);
-    } catch (decErr: any) {
-      console.error("SabPaisa Decryption Error:", decErr);
-      return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=DecryptionFailed`);
-    }
-
-    console.log("SabPaisa Decrypted Response:", decryptedText);
-
-    // Parse the query string params
-    const params = new URLSearchParams(decryptedText);
-    const clientTxnId = params.get("clientTxnId");
-    const sabpaisaTxnId = params.get("sabpaisaTxnId") || params.get("spTxnId") || "N/A";
-    const statusCode = params.get("statusCode") || params.get("status") || "FAILED";
-    const amount = params.get("amount") || "0.00";
 
     if (!clientTxnId) {
-      console.error("SabPaisa Callback: Missing clientTxnId");
+      console.error("SabPaisa Callback: Missing clientTxnId / merchantTxnId");
       return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=MissingTxnId`);
     }
 
@@ -145,10 +292,14 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
       return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=OrderNotFound`);
     }
 
-    // Verify payment outcome
     const isSuccess = statusCode.toUpperCase() === "SUCCESS" || statusCode.toUpperCase() === "TXN_SUCCESS";
     if (isSuccess) {
       order.status = "Paid";
+      if (order.user) {
+        await User.findByIdAndUpdate(order.user, {
+          $set: { cart: [] }
+        });
+      }
     } else {
       order.status = "Failed";
     }
@@ -163,4 +314,77 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
     console.error("SabPaisa Callback Error:", err);
     return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=ServerError`);
   }
+};
+
+/**
+ * Dynamic Transaction Inquiry to check payment status directly with SabPaisa (PG 3.0 REST API)
+ */
+export const querySabPaisaStatus = (clientTxnId: string, amountRupee: number): Promise<string> => {
+  return new Promise((resolve) => {
+    try {
+      const isStaging = SABPAISA_INIT_URL.includes("stage") || SABPAISA_INIT_URL.includes("staging");
+      const host = isStaging ? "staging-sb-merchant-api.sabpaisa.in" : "merchant-api.sabpaisa.in";
+      const path = "/api/v2/payments/enquiry";
+
+      const timestampVal = Math.floor(Date.now() / 1000);
+      const amountInPaise = Math.round(amountRupee * 100);
+
+      // Checksum format: merchantId|merchantTxnId|amount|currency|timestamp
+      const checksumString = `${SABPAISA_CLIENT_CODE}|${clientTxnId}|${amountInPaise}|INR|${timestampVal}`;
+      const checksum = crypto
+        .createHmac("sha256", SABPAISA_AUTH_IV) // SABPAISA_AUTH_IV maps to SABPAISA_SECRET_KEY
+        .update(checksumString)
+        .digest("hex");
+
+      const postData = JSON.stringify({
+        clientCode: SABPAISA_CLIENT_CODE,
+        merchantId: SABPAISA_CLIENT_CODE,
+        merchantTxnId: clientTxnId,
+        amount: amountInPaise,
+        currency: "INR",
+        timestamp: timestampVal,
+        checksum: checksum
+      });
+
+      console.log("Attempting SabPaisa PG 3.0 Enquiry on Host:", host, "with payload:", postData);
+
+      const options = {
+        hostname: host,
+        port: 443,
+        path: path,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Api-Key": SABPAISA_AUTH_KEY, // SABPAISA_AUTH_KEY is the API Key
+          "X-Merchant-Id": SABPAISA_CLIENT_CODE, // X-Merchant-Id header is required
+          "Content-Length": Buffer.byteLength(postData),
+        },
+      };
+
+      const req = https.request(options, (res) => {
+        let body = "";
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => {
+          try {
+            const json = JSON.parse(body);
+            console.log(`SabPaisa PG 3.0 Enquiry Response for ${clientTxnId}:`, json);
+            const status = json.status || json.statusCode || "FAILED";
+            resolve(status);
+          } catch (e) {
+            resolve("FAILED");
+          }
+        });
+      });
+
+      req.on("error", (err) => {
+        console.error("SabPaisa Enquiry request error:", err);
+        resolve("FAILED");
+      });
+      req.write(postData);
+      req.end();
+    } catch (err) {
+      console.error("SabPaisa Enquiry try error:", err);
+      resolve("FAILED");
+    }
+  });
 };

@@ -27,6 +27,26 @@ const orderSchema = new mongoose_1.default.Schema({
         type: String,
         required: true,
         default: "Pending", // Pending, Paid, Delivered, Cancelled
+    },
+    awbNumber: {
+        type: String
+    },
+    courierName: {
+        type: String
+    },
+    logisticsOrderId: {
+        type: String
+    },
+    shipmentStatus: {
+        type: String,
+        required: true,
+        default: "Unshipped" // Unshipped, Shipped, In-Transit, Delivered, RTO
+    },
+    shippingLabelUrl: {
+        type: String
+    },
+    clientTxnId: {
+        type: String
     }
 }, {
     timestamps: true

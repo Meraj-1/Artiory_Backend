@@ -5,6 +5,8 @@ const order_controller_1 = require("../controllers/order_controller");
 const auth_middleware_1 = require("../middleware/auth_middleware");
 const router = (0, express_1.Router)();
 router.post("/", auth_middleware_1.protect, order_controller_1.createOrder);
+router.get("/", auth_middleware_1.protect, order_controller_1.getAllOrders);
+router.post("/reconcile", auth_middleware_1.protect, order_controller_1.reconcileOrder);
 router.get("/myorders", auth_middleware_1.protect, order_controller_1.getMyOrders);
 router.get("/:id", auth_middleware_1.protect, order_controller_1.getOrderById);
 exports.default = router;
