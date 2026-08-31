@@ -380,9 +380,41 @@ export const getUserWishlist = async (req: Request, res: Response): Promise<any>
     }
 
     const fullUser = await User.findById(user._id);
+    if (!fullUser || !fullUser.wishlist || fullUser.wishlist.length === 0) {
+      return res.status(200).json({ success: true, wishlist: [] });
+    }
+
+    const enrichedWishlist = await Promise.all(
+      fullUser.wishlist.map(async (item: any) => {
+        let stock = 999;
+        const rawItem = item.toObject ? item.toObject() : item;
+        if (mongoose.Types.ObjectId.isValid(String(item.productId))) {
+          const product = await Product.findById(item.productId);
+          if (product) {
+            stock = product.stockQuantity ?? 0;
+            return {
+              ...rawItem,
+              stock: stock,
+              stockQuantity: stock,
+              isOutOfStock: stock <= 0,
+              price: product.sellingPrice || item.price,
+              name: product.productName || item.name,
+              image: product.thumbnail || item.image
+            };
+          }
+        }
+        return {
+          ...rawItem,
+          stock: stock,
+          stockQuantity: stock,
+          isOutOfStock: stock <= 0
+        };
+      })
+    );
+
     return res.status(200).json({
       success: true,
-      wishlist: fullUser?.wishlist || []
+      wishlist: enrichedWishlist
     });
   } catch (error) {
     console.error("Get user wishlist error:", error);

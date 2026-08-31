@@ -6,9 +6,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.reconcileOrder = exports.getAllOrders = exports.getOrderById = exports.getMyOrders = exports.createOrder = void 0;
 const Order_model_1 = __importDefault(require("../models/Order_model"));
 const Product_model_1 = __importDefault(require("../models/Product_model"));
+const User_model_1 = __importDefault(require("../models/User_model"));
 const createOrder = async (req, res) => {
     try {
-        const { orderItems, totalPrice } = req.body;
+        const { orderItems, totalPrice, shippingAddress, discountAmount = 0, shippingCharge = 149, couponCode = "", } = req.body;
         if (!orderItems || orderItems.length === 0) {
             return res.status(400).json({ message: "No order items" });
         }
@@ -36,6 +37,10 @@ const createOrder = async (req, res) => {
             user: req.user?._id,
             orderItems,
             totalPrice,
+            shippingAddress,
+            discountAmount,
+            shippingCharge,
+            couponCode,
         });
         const createdOrder = await order.save();
         res.status(201).json(createdOrder);
@@ -51,7 +56,22 @@ const getMyOrders = async (req, res) => {
         if (!req.user?._id) {
             return res.status(401).json({ message: "Not authorized" });
         }
-        const orders = await Order_model_1.default.find({ user: req.user._id });
+        const orders = await Order_model_1.default.find({ user: req.user._id })
+            .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
+            .sort({ createdAt: -1 });
+        const pending = orders.filter((o) => o.status === "Pending" && o.clientTxnId);
+        if (pending.length > 0) {
+            await Promise.all(pending.map(async (o) => {
+                try {
+                    const status = await (0, payment_controller_1.querySabPaisaStatus)(o.clientTxnId);
+                    if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
+                        o.status = "Paid";
+                        await o.save();
+                    }
+                }
+                catch (e) { }
+            }));
+        }
         res.status(200).json(orders);
     }
     catch (error) {
@@ -61,8 +81,25 @@ const getMyOrders = async (req, res) => {
 exports.getMyOrders = getMyOrders;
 const getOrderById = async (req, res) => {
     try {
-        const order = await Order_model_1.default.findById(req.params.id).populate("user", "name email profileImage");
+        const order = await Order_model_1.default.findById(req.params.id)
+            .populate("user", "name email profileImage")
+            .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight");
         if (order) {
+            if (order.status === "Pending" && order.clientTxnId) {
+                try {
+                    const status = await (0, payment_controller_1.querySabPaisaStatus)(order.clientTxnId);
+                    if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
+                        order.status = "Paid";
+                        await order.save();
+                        if (order.user) {
+                            await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+                        }
+                    }
+                }
+                catch (e) {
+                    console.error("Order live status enquiry check error:", e);
+                }
+            }
             res.status(200).json(order);
         }
         else {
@@ -80,14 +117,15 @@ const getAllOrders = async (req, res) => {
         // 1. Fetch all orders
         const allOrders = await Order_model_1.default.find()
             .populate("user", "name email number")
+            .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
             .sort({ createdAt: -1 });
         // 2. Reconcile any Pending orders that have a clientTxnId directly from SabPaisa
         const pendingOrdersToReconcile = allOrders.filter((order) => order.status === "Pending" && order.clientTxnId);
         if (pendingOrdersToReconcile.length > 0) {
             await Promise.all(pendingOrdersToReconcile.map(async (order) => {
                 try {
-                    const status = await (0, payment_controller_1.querySabPaisaStatus)(order.clientTxnId, order.totalPrice);
-                    if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000") {
+                    const status = await (0, payment_controller_1.querySabPaisaStatus)(order.clientTxnId);
+                    if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
                         order.status = "Paid";
                         await order.save();
                         console.log(`Reconciled Order ${order._id} dynamically: status set to Paid`);
@@ -97,8 +135,14 @@ const getAllOrders = async (req, res) => {
                         status === "0300" ||
                         status === "0200") {
                         order.status = "Failed";
+                        // Restore stock for failed reconciliation
+                        for (const item of order.orderItems) {
+                            await Product_model_1.default.findByIdAndUpdate(item.productId, {
+                                $inc: { stockQuantity: item.qty }
+                            });
+                        }
                         await order.save();
-                        console.log(`Reconciled Order ${order._id} dynamically: status set to Failed (Expired/Failed on gateway)`);
+                        console.log(`Reconciled Order ${order._id} dynamically: status set to Failed and stock restored`);
                     }
                 }
                 catch (err) {
@@ -106,9 +150,10 @@ const getAllOrders = async (req, res) => {
                 }
             }));
         }
-        // 3. Return only paid or delivered orders to dashboard
-        const paidOrders = allOrders.filter((order) => ["Paid", "Delivered"].includes(order.status));
-        res.status(200).json({ success: true, data: paidOrders });
+        // 3. Return paid, shipped, delivered, or in-transit orders to dashboard
+        const activeOrders = allOrders.filter((order) => ["Paid", "Shipped", "Delivered", "In-Transit"].includes(order.status) ||
+            order.shipmentStatus !== "Unshipped");
+        res.status(200).json({ success: true, data: activeOrders });
     }
     catch (error) {
         console.error("Get All Orders Error:", error);
@@ -119,19 +164,23 @@ exports.getAllOrders = getAllOrders;
 const reconcileOrder = async (req, res) => {
     try {
         const { orderId, clientTxnId } = req.body;
-        if (!orderId || !clientTxnId) {
-            return res.status(400).json({ success: false, message: "orderId and clientTxnId are required" });
+        if (!orderId && !clientTxnId) {
+            return res.status(400).json({ success: false, message: "orderId or clientTxnId is required" });
         }
-        const order = await Order_model_1.default.findById(orderId);
+        const order = await Order_model_1.default.findById(orderId || (clientTxnId ? clientTxnId.split("-")[0] : null));
         if (!order) {
             return res.status(404).json({ success: false, message: "Order not found" });
         }
-        order.clientTxnId = clientTxnId;
-        const status = await (0, payment_controller_1.querySabPaisaStatus)(clientTxnId, order.totalPrice);
-        if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000") {
+        const txnToQuery = clientTxnId || order.clientTxnId || order._id.toString();
+        order.clientTxnId = txnToQuery;
+        const status = await (0, payment_controller_1.querySabPaisaStatus)(txnToQuery);
+        if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
             order.status = "Paid";
             await order.save();
-            return res.status(200).json({ success: true, message: "Order reconciled successfully to Paid!", status: order.status });
+            if (order.user) {
+                await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+            }
+            return res.status(200).json({ success: true, message: "Order reconciled successfully with SabPaisa! Status set to Paid.", status: order.status });
         }
         else {
             if (status === "EXPIRED" || status === "FAILED" || status === "0300" || status === "0200") {

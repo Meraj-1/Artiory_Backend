@@ -16,6 +16,7 @@ import customerRoutes from "./routes/customer.routes";
 import couponRoutes from "./routes/coupon.routes";
 import paymentRoutes from "./routes/payment.routes";
 import logisticsRoutes from "./routes/logistics.routes";
+import notificationRoutes from "./routes/notification.routes";
 
 const app = express();
 
@@ -61,6 +62,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.get("/", (req, res) => {
   res.json({ message: "Artiory API Running" });
@@ -78,6 +80,7 @@ app.use("/api/customers", customerRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/payment", paymentRoutes);
 app.use("/api/logistics", logisticsRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 // Global Error Handler Middleware (ensures JSON responses and manual CORS headers on errors)
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {

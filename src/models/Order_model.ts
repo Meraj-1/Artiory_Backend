@@ -7,10 +7,30 @@ export interface IOrderItem {
   price: number;
 }
 
+export interface IShippingAddress {
+  name?: string;
+  email?: string;
+  phone?: string;
+  alternatePhone?: string;
+  home?: string;
+  street?: string;
+  landmark?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  addressType?: string;
+}
+
 export interface IOrder extends Document {
   user: mongoose.Schema.Types.ObjectId;
   orderItems: IOrderItem[];
   totalPrice: number;
+  discountAmount?: number;
+  shippingCharge?: number;
+  couponCode?: string;
+  shippingAddress?: IShippingAddress;
   status: string;
   awbNumber?: string;
   courierName?: string;
@@ -18,6 +38,7 @@ export interface IOrder extends Document {
   shipmentStatus: string;
   shippingLabelUrl?: string;
   clientTxnId?: string;
+  returnUrl?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -42,6 +63,32 @@ const orderSchema = new mongoose.Schema<IOrder>(
       required: true,
       default: 0.0
     },
+    discountAmount: {
+      type: Number,
+      default: 0.0
+    },
+    shippingCharge: {
+      type: Number,
+      default: 0.0
+    },
+    couponCode: {
+      type: String
+    },
+    shippingAddress: {
+      name: { type: String },
+      email: { type: String },
+      phone: { type: String },
+      alternatePhone: { type: String },
+      home: { type: String },
+      street: { type: String },
+      landmark: { type: String },
+      address: { type: String },
+      city: { type: String },
+      state: { type: String },
+      postalCode: { type: String },
+      country: { type: String, default: "India" },
+      addressType: { type: String, default: "Home" }
+    },
     status: {
       type: String,
       required: true,
@@ -65,6 +112,9 @@ const orderSchema = new mongoose.Schema<IOrder>(
       type: String
     },
     clientTxnId: {
+      type: String
+    },
+    returnUrl: {
       type: String
     }
   },

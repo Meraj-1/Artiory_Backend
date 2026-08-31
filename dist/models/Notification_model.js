@@ -34,100 +34,39 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const mongoose_1 = __importStar(require("mongoose"));
-const productSchema = new mongoose_1.Schema({
-    productName: {
-        type: String,
-        required: true,
-        trim: true,
-    },
-    skuCode: {
+const notificationSchema = new mongoose_1.Schema({
+    notificationId: {
         type: String,
         required: true,
         unique: true,
-        trim: true,
-        uppercase: true,
+        index: true,
     },
-    category: {
+    title: {
         type: String,
-        default: "",
+        required: true,
     },
-    subCategory: {
+    message: {
         type: String,
-        default: "",
+        required: true,
     },
-    variants: [
-        {
-            color: String,
-            design: String,
-            sellingPrice: Number,
-            mrp: Number,
-            stockQuantity: Number,
-            imageUrl: String,
-        },
-    ],
-    sellingPrice: {
-        type: Number,
-        default: 0,
-    },
-    mrp: {
-        type: Number,
-        default: 0,
-    },
-    stockQuantity: {
-        type: Number,
-        default: 0,
-    },
-    reorderLevel: {
-        type: Number,
-        default: 5,
-    },
-    shortDescription: {
+    type: {
         type: String,
-        default: "",
+        enum: ["order", "inventory", "alert", "customer", "system"],
+        default: "system",
     },
-    detailedDescription: {
+    link: {
         type: String,
-        default: "",
+        default: "/dashboard",
     },
-    weight: {
-        type: Number,
-        default: 0,
-    },
-    weightGrams: {
-        type: Number,
-        default: 0,
-    },
-    weightUnit: {
-        type: String,
-        default: "gm",
-    },
-    dimensions: {
-        length: Number,
-        width: Number,
-        height: Number,
-    },
-    gst: {
-        type: Number,
-        default: 0,
-    },
-    active: {
-        type: Boolean,
-        default: true,
-    },
-    published: {
+    read: {
         type: Boolean,
         default: false,
     },
-    thumbnail: {
-        type: String,
-        default: "",
-    },
-    images: [{ type: String }],
-    deletedAt: {
-        type: Date,
-        index: { expires: '7d' },
+    metadata: {
+        type: mongoose_1.Schema.Types.Mixed,
+        default: {},
     },
 }, {
     timestamps: true,
 });
-exports.default = mongoose_1.default.model("Product", productSchema);
+exports.default = mongoose_1.default.models.Notification || mongoose_1.default.model("Notification", notificationSchema);

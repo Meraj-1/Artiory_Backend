@@ -23,6 +23,32 @@ const orderSchema = new mongoose_1.default.Schema({
         required: true,
         default: 0.0
     },
+    discountAmount: {
+        type: Number,
+        default: 0.0
+    },
+    shippingCharge: {
+        type: Number,
+        default: 0.0
+    },
+    couponCode: {
+        type: String
+    },
+    shippingAddress: {
+        name: { type: String },
+        email: { type: String },
+        phone: { type: String },
+        alternatePhone: { type: String },
+        home: { type: String },
+        street: { type: String },
+        landmark: { type: String },
+        address: { type: String },
+        city: { type: String },
+        state: { type: String },
+        postalCode: { type: String },
+        country: { type: String, default: "India" },
+        addressType: { type: String, default: "Home" }
+    },
     status: {
         type: String,
         required: true,
@@ -46,6 +72,9 @@ const orderSchema = new mongoose_1.default.Schema({
         type: String
     },
     clientTxnId: {
+        type: String
+    },
+    returnUrl: {
         type: String
     }
 }, {
