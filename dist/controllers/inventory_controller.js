@@ -54,44 +54,80 @@ const getInventoryList = async (req, res) => {
     }
 };
 exports.getInventoryList = getInventoryList;
-// PUT /api/inventory/update
+// PUT /api/inventory/update or PATCH /api/inventory/:sku
 const updateInventoryItem = async (req, res) => {
     try {
-        const { sku, stock, reorderLevel } = req.body;
-        if (!sku) {
+        const rawSku = req.params.sku || req.body.sku;
+        const { stock, reorderLevel } = req.body;
+        if (!rawSku) {
             sendError(res, 400, "SKU code is required");
             return;
         }
-        const targetSku = sku.toString().trim().toUpperCase();
+        const targetSku = rawSku.toString().trim();
         const newStock = Number(stock ?? 0);
-        const newReorder = Number(reorderLevel ?? 5);
+        const newReorder = reorderLevel !== undefined ? Number(reorderLevel) : undefined;
+        const skuRegex = new RegExp(`^${targetSku.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
         // Try finding and updating standard Product
-        let product = await Product_model_1.default.findOne({ skuCode: targetSku });
+        let product = await Product_model_1.default.findOne({
+            $or: [
+                { skuCode: skuRegex },
+                { skuCode: targetSku },
+                { sku: skuRegex }
+            ]
+        });
         if (product) {
-            product.stockQuantity = newStock;
-            product.reorderLevel = newReorder;
+            if (stock !== undefined) {
+                product.stockQuantity = newStock;
+            }
+            if (newReorder !== undefined) {
+                product.reorderLevel = newReorder;
+            }
             await product.save();
-            res.status(200).json({ success: true, message: "Product inventory updated successfully" });
+            res.status(200).json({
+                success: true,
+                message: "Product inventory updated successfully",
+                data: {
+                    sku: product.skuCode,
+                    name: product.productName,
+                    stock: product.stockQuantity,
+                    reorderLevel: product.reorderLevel
+                }
+            });
             return;
         }
         // Try finding and updating ComboProduct
-        let combo = await ComboProduct_model_1.default.findOne({ comboSku: targetSku });
+        let combo = await ComboProduct_model_1.default.findOne({
+            $or: [
+                { comboSku: skuRegex },
+                { comboSku: targetSku }
+            ]
+        });
         if (combo) {
-            combo.reorderLevel = newReorder;
-            // If updating stock manually, set stockLogic to manual so that automated calculations don't overwrite it
+            if (newReorder !== undefined) {
+                combo.reorderLevel = newReorder;
+            }
             if (stock !== undefined) {
                 combo.comboStock = newStock;
                 combo.stockLogic = "manual";
             }
             await combo.save();
-            res.status(200).json({ success: true, message: "Combo inventory updated successfully" });
+            res.status(200).json({
+                success: true,
+                message: "Combo inventory updated successfully",
+                data: {
+                    sku: combo.comboSku,
+                    name: combo.comboName,
+                    stock: combo.comboStock,
+                    reorderLevel: combo.reorderLevel
+                }
+            });
             return;
         }
-        sendError(res, 404, "Inventory item not found with the specified SKU");
+        sendError(res, 404, `Inventory item not found with SKU: ${targetSku}`);
     }
     catch (err) {
-        console.error(err);
-        sendError(res, 500, "Server Error");
+        console.error("Update inventory error:", err);
+        sendError(res, 500, err.message || "Server Error");
     }
 };
 exports.updateInventoryItem = updateInventoryItem;

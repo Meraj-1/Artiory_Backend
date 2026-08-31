@@ -21,7 +21,9 @@ export interface IProduct extends Document {
   reorderLevel?: number;
   shortDescription?: string;
   detailedDescription?: string;
-  weight?: number;
+  weight?: number; // Weight in grams (e.g. 150)
+  weightGrams?: number;
+  weightUnit?: string;
   dimensions?: {
     length?: number;
     width?: number;
@@ -96,6 +98,14 @@ const productSchema = new Schema<IProduct>(
     weight: {
       type: Number,
       default: 0,
+    },
+    weightGrams: {
+      type: Number,
+      default: 0,
+    },
+    weightUnit: {
+      type: String,
+      default: "gm",
     },
     dimensions: {
       length: Number,
