@@ -616,19 +616,6 @@ const checkPincodeServiceability = async (req, res) => {
         console.log("iThink Pincode Check Payload:", JSON.stringify(payload));
         const response = await postToiThink("pincode/check.json", payload);
         console.log("iThink Pincode Check Response:", JSON.stringify(response));
-        const isStaging = process.env.ITHINK_API_URL?.includes("pre-alpha") || false;
-        if (isStaging) {
-            // Staging/Sandbox mode: Allow order placement regardless of sandbox serviceability constraints
-            return res.status(200).json({
-                success: true,
-                serviceable: true,
-                cod: true,
-                city: response?.city || "Staging City",
-                state: response?.state || "Staging State",
-                message: "Staging sandbox mode: Allowed for testing.",
-                rawResponse: response
-            });
-        }
         if (response && (response.status_code === 200 || response.status === "success") && response.data) {
             const dataKeys = Object.keys(response.data);
             let serviceable = false;
@@ -729,21 +716,29 @@ const getShippingCharge = async (req, res) => {
                     secret_key: ITHINK_SECRET_KEY,
                     from_pincode: Number(from_pincode || 400071),
                     to_pincode: cleanDestPin,
+                    shipping_weight_kg: weightInKg,
                     weight: weightInKg.toString(),
-                    payment_method: payment_method === "cod" ? "cod" : "prepaid",
-                    product_mrp: String(totalPrice || 500),
+                    shipping_length_cms: maxLength,
+                    shipping_width_cms: maxWidth,
+                    shipping_height_cms: totalHeight,
                     length: String(maxLength),
                     width: String(maxWidth),
-                    height: String(totalHeight)
+                    height: String(totalHeight),
+                    order_type: "Forward",
+                    payment_method: payment_method === "cod" ? "COD" : "Prepaid",
+                    service_type: "Surface",
+                    product_mrp: String(totalPrice || 500)
                 }
             };
+            console.log("iThink Live Rate Check Payload:", JSON.stringify(payload));
             const response = await postToiThink("rate/check.json", payload);
+            console.log("iThink Live Rate Check Response:", JSON.stringify(response));
             if (response && (response.status === "success" || response.status_code === 200) && Array.isArray(response.data)) {
                 const isCod = payment_method === "cod";
                 const couriers = response.data.filter((c) => {
                     if (isCod)
-                        return c.cod === "Y";
-                    return c.prepaid === "Y";
+                        return c.cod === "Y" || c.cod === "yes" || c.cod === 1;
+                    return c.prepaid === "Y" || c.prepaid === "yes" || c.prepaid === 1;
                 });
                 if (couriers.length > 0) {
                     // Sort couriers by live rate ascending (cheapest / best rate first)
@@ -765,7 +760,7 @@ const getShippingCharge = async (req, res) => {
                             rate: Math.round(Number(c.rate)),
                             tat: `${c.delivery_tat || 4} Days`
                         })),
-                        source: "iThink Live Rate API"
+                        source: "iThink Live Multi-Carrier Rate API"
                     });
                 }
             }
