@@ -55,8 +55,8 @@ const SABPAISA_TRANS_USER_NAME = process.env.SABPAISA_TRANS_USER_NAME || "";
 const SABPAISA_TRANS_USER_PASSWORD = process.env.SABPAISA_TRANS_USER_PASSWORD || "";
 const SABPAISA_AUTH_KEY = process.env.SABPAISA_AUTH_KEY || process.env.SABPAISA_API_KEY || "sp_itOrld7Rm0SGjkqg_VSEXBtZXqi8T26-pMPfpUCxUQo";
 const SABPAISA_AUTH_IV = process.env.SABPAISA_AUTH_IV || process.env.SABPAISA_SECRET_KEY || "sec_lLao-1-yDLmV81YjExxgR00a8o7FgJ8-HLSJj9Od4hY";
-const SABPAISA_MERCHANT_API_URL = process.env.SABPAISA_MERCHANT_API_URL || "https://staging-sb-merchant-api.sabpaisa.in";
-const SABPAISA_INIT_URL = process.env.SABPAISA_INIT_URL || "https://stage-securepay.sabpaisa.in/SabPaisa/sabPaisaInit?v=1";
+const SABPAISA_MERCHANT_API_URL = process.env.SABPAISA_MERCHANT_API_URL || "https://merchant-api.sabpaisa.in";
+const SABPAISA_INIT_URL = process.env.SABPAISA_INIT_URL || "https://securepay.sabpaisa.in/SabPaisa/sabPaisaInit?v=1";
 const SABPAISA_CALLBACK_URL = (process.env.SABPAISA_CALLBACK_URL || "https://artiory.com/api/payment/sabpaisa/callback").replace(/([^:]\/)\/+/g, "$1");
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://artiory.com";
 /**

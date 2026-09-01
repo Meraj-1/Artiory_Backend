@@ -18,21 +18,8 @@ const ITHINK_PICKUP_ADDRESS_ID = process.env.ITHINK_PICKUP_ADDRESS_ID || "122518
  */
 const postToiThink = (endpointPath, payload) => {
     return new Promise((resolve, reject) => {
-        let baseHost = "my.ithinklogistics.com";
-        if (process.env.ITHINK_API_URL) {
-            try {
-                const urlObj = new URL(process.env.ITHINK_API_URL);
-                baseHost = urlObj.hostname;
-            }
-            catch (e) {
-                if (process.env.ITHINK_API_URL.includes("pre-alpha")) {
-                    baseHost = "pre-alpha.ithinklogistics.com";
-                }
-                else {
-                    baseHost = "my.ithinklogistics.com";
-                }
-            }
-        }
+        // Enforce official Production URL: https://my.ithinklogistics.com/api_v3/
+        const baseHost = "my.ithinklogistics.com";
         const fullPath = `/api_v3/${endpointPath}`;
         const postData = JSON.stringify(payload);
         const options = {
