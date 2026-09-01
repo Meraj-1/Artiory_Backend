@@ -6,11 +6,11 @@ import {
   getAllOrders,
   reconcileOrder,
 } from "../controllers/order_controller";
-import { protect } from "../middleware/auth_middleware";
+import { protect, protectOptional } from "../middleware/auth_middleware";
 
 const router = Router();
 
-router.post("/", protect, createOrder);
+router.post("/", protectOptional, createOrder);
 router.get("/", protect, getAllOrders);
 router.post("/reconcile", protect, reconcileOrder);
 router.get("/myorders", protect, getMyOrders);

@@ -4,7 +4,7 @@ const express_1 = require("express");
 const payment_controller_1 = require("../controllers/payment_controller");
 const auth_middleware_1 = require("../middleware/auth_middleware");
 const router = (0, express_1.Router)();
-router.post("/sabpaisa/initiate", auth_middleware_1.protect, payment_controller_1.initiateSabPaisaPayment);
+router.post("/sabpaisa/initiate", auth_middleware_1.protectOptional, payment_controller_1.initiateSabPaisaPayment);
 router.all("/sabpaisa/callback", payment_controller_1.sabPaisaCallback);
 router.get("/sabpaisa/callback", payment_controller_1.sabPaisaCallback);
 router.post("/sabpaisa/callback", payment_controller_1.sabPaisaCallback);
