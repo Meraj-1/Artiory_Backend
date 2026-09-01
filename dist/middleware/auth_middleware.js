@@ -51,19 +51,26 @@ const protect = async (req, res, next) => {
                 return res.status(401).json({ message: "Not authorized, token failed" });
             }
             let user = null;
-            if (decoded.id) {
-                user = await User_model_1.default.findById(decoded.id).select("-googleId");
+            try {
+                if (decoded.id && /^[0-9a-fA-F]{24}$/.test(decoded.id)) {
+                    user = await User_model_1.default.findById(decoded.id).select("-googleId");
+                }
+                if (!user && decoded.email) {
+                    user = await User_model_1.default.findOne({ email: decoded.email }).select("-googleId");
+                }
+                if (!user) {
+                    const userEmail = decoded.email || `customer_${(decoded.id || Date.now()).toString().slice(-6)}@artiory.com`;
+                    user = await User_model_1.default.findOne({ email: userEmail });
+                    if (!user) {
+                        user = await User_model_1.default.create({
+                            name: decoded.name || "Customer",
+                            email: userEmail,
+                        });
+                    }
+                }
             }
-            if (!user && decoded.email) {
-                user = await User_model_1.default.findOne({ email: decoded.email }).select("-googleId");
-            }
-            if (!user && decoded.id && decoded.email) {
-                // Create user record if verified token exists but not yet in backend User collection
-                user = await User_model_1.default.create({
-                    _id: decoded.id,
-                    email: decoded.email,
-                    name: decoded.name || "Customer",
-                });
+            catch (userLookupErr) {
+                console.error("Auth User Lookup/Create Error:", userLookupErr);
             }
             if (user) {
                 req.user = user;
