@@ -107,13 +107,6 @@ const initiateSabPaisaPayment = async (req, res) => {
             return res.status(404).json({ success: false, message: "Order not found" });
         }
         const user = order.user;
-        if (process.env.PAYMENT_BYPASS === "true") {
-            console.log("PAYMENT_BYPASS active. Direct redirecting with Paid status.");
-            order.status = "Paid";
-            await order.save();
-            const redirectUrl = `${FRONTEND_URL}/checkout/status?status=paid&orderId=${order._id}`;
-            return res.status(200).json({ success: true, checkoutUrl: redirectUrl });
-        }
         // Extract customer details from order shipping address or user profile
         const payerName = (order.shippingAddress?.name || user?.name || "Valued Customer").replace(/[^a-zA-Z ]/g, "").trim() || "Customer";
         const payerEmail = (order.shippingAddress?.email || user?.email || "customer@artiory.com").trim();

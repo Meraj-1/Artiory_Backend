@@ -116,13 +116,6 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
 
     const user = order.user as any;
 
-    if (process.env.PAYMENT_BYPASS === "true") {
-      console.log("PAYMENT_BYPASS active. Direct redirecting with Paid status.");
-      order.status = "Paid";
-      await order.save();
-      const redirectUrl = `${FRONTEND_URL}/checkout/status?status=paid&orderId=${order._id}`;
-      return res.status(200).json({ success: true, checkoutUrl: redirectUrl });
-    }
     // Extract customer details from order shipping address or user profile
     const payerName = (order.shippingAddress?.name || user?.name || "Valued Customer").replace(/[^a-zA-Z ]/g, "").trim() || "Customer";
     const payerEmail = (order.shippingAddress?.email || user?.email || "customer@artiory.com").trim();
