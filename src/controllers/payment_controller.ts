@@ -182,15 +182,14 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
 
     console.log("SabPaisa Classic Query String:", queryString);
 
-    // Try SabPaisa PG 3.0 API first (Supports both live and sandbox credentials)
+    // Try SabPaisa Live PG 3.0 API
     try {
-      const isStaging = SABPAISA_INIT_URL.includes("stage") || SABPAISA_INIT_URL.includes("staging");
-      const configuredBase = process.env.SABPAISA_MERCHANT_API_URL || (isStaging ? "https://staging-sb-merchant-api.sabpaisa.in" : "https://merchant-api.sabpaisa.in");
+      const configuredBase = process.env.SABPAISA_MERCHANT_API_URL || "https://merchant-api.sabpaisa.in";
       
       const endpointsToTry = [
+        "https://merchant-api.sabpaisa.in/api/v2/payments",
         `${configuredBase}/api/v2/payments`,
-        "https://staging-sb-merchant-api.sabpaisa.in/api/v2/payments",
-        "https://merchant-api.sabpaisa.in/api/v2/payments"
+        "https://staging-sb-merchant-api.sabpaisa.in/api/v2/payments"
       ];
       // Deduplicate
       const uniqueEndpoints = Array.from(new Set(endpointsToTry));
