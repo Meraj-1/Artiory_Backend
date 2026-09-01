@@ -189,19 +189,25 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
 
     console.log("SabPaisa Classic Query String:", queryString);
 
-    // Try SabPaisa PG 3.0 API first (curl -X POST 'https://staging-sb-merchant-api.sabpaisa.in/api/v2/payments')
+    // Try SabPaisa PG 3.0 API first (Supports both live and sandbox credentials)
     try {
       const isStaging = SABPAISA_INIT_URL.includes("stage") || SABPAISA_INIT_URL.includes("staging");
-      const pg3BaseUrl = process.env.SABPAISA_MERCHANT_API_URL || (isStaging ? "https://staging-sb-merchant-api.sabpaisa.in" : "https://merchant-api.sabpaisa.in");
-      const pg3Endpoint = `${pg3BaseUrl}/api/v2/payments`;
+      const configuredBase = process.env.SABPAISA_MERCHANT_API_URL || (isStaging ? "https://staging-sb-merchant-api.sabpaisa.in" : "https://merchant-api.sabpaisa.in");
+      
+      const endpointsToTry = [
+        `${configuredBase}/api/v2/payments`,
+        "https://staging-sb-merchant-api.sabpaisa.in/api/v2/payments",
+        "https://merchant-api.sabpaisa.in/api/v2/payments"
+      ];
+      // Deduplicate
+      const uniqueEndpoints = Array.from(new Set(endpointsToTry));
 
       const timestampVal = Math.floor(Date.now() / 1000);
       const amountInPaise = Math.round(order.totalPrice * 100);
 
-      // Checksum format: merchantId|merchantTxnId|amount|currency|timestamp
       const checksumString = `${SABPAISA_CLIENT_CODE}|${clientTxnId}|${amountInPaise}|INR|${timestampVal}`;
       const checksum = crypto
-        .createHmac("sha256", SABPAISA_AUTH_IV) // SABPAISA_AUTH_IV maps to SABPAISA_SECRET_KEY
+        .createHmac("sha256", SABPAISA_AUTH_IV)
         .update(checksumString)
         .digest("hex");
 
@@ -218,33 +224,33 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
         timestamp: timestampVal
       };
 
-      console.log("Attempting SabPaisa PG 3.0 Initiation on URL:", pg3Endpoint);
-      console.log("PG 3.0 Return/Callback URL:", activeCallbackUrl);
-      console.log("PG 3.0 Payload:", JSON.stringify(pg3Payload));
+      for (const endpoint of uniqueEndpoints) {
+        try {
+          console.log("Attempting SabPaisa PG 3.0 on URL:", endpoint);
+          const pg3Response = await pg3Request(endpoint, SABPAISA_AUTH_KEY, pg3Payload);
+          console.log("SabPaisa PG 3.0 Response from", endpoint, ":", JSON.stringify(pg3Response));
 
-      const pg3Response = await pg3Request(pg3Endpoint, SABPAISA_AUTH_KEY, pg3Payload);
-      console.log("SabPaisa PG 3.0 Response:", JSON.stringify(pg3Response));
+          const checkoutUrl =
+            pg3Response?.checkoutUrl ||
+            pg3Response?.paymentUrl ||
+            pg3Response?.payment_url ||
+            pg3Response?.data?.checkoutUrl ||
+            pg3Response?.data?.paymentUrl ||
+            pg3Response?.data?.payment_url;
+          const clientSecret = pg3Response?.clientSecret || pg3Response?.data?.clientSecret;
 
-      const checkoutUrl =
-        pg3Response?.checkoutUrl ||
-        pg3Response?.paymentUrl ||
-        pg3Response?.payment_url ||
-        pg3Response?.data?.checkoutUrl ||
-        pg3Response?.data?.paymentUrl ||
-        pg3Response?.data?.payment_url;
-      const clientSecret = pg3Response?.clientSecret || pg3Response?.data?.clientSecret;
-
-      if (checkoutUrl) {
-        // SabPaisa checkoutUrl requires clientSecret parameter to avoid "Missing client secret" browser crashes
-        const finalUrl = clientSecret && !checkoutUrl.includes("clientSecret")
-          ? `${checkoutUrl}${checkoutUrl.includes("?") ? "&" : "?"}clientSecret=${clientSecret}`
-          : checkoutUrl;
-        return res.status(200).json({
-          success: true,
-          checkoutUrl: finalUrl
-        });
-      } else {
-        console.warn("SabPaisa PG 3.0 did not return checkoutUrl. Falling back to Classic AES...", pg3Response);
+          if (checkoutUrl) {
+            const finalUrl = clientSecret && !checkoutUrl.includes("clientSecret")
+              ? `${checkoutUrl}${checkoutUrl.includes("?") ? "&" : "?"}clientSecret=${clientSecret}`
+              : checkoutUrl;
+            return res.status(200).json({
+              success: true,
+              checkoutUrl: finalUrl
+            });
+          }
+        } catch (subErr: any) {
+          console.warn("Endpoint failed:", endpoint, subErr?.message);
+        }
       }
     } catch (pg3Error) {
       console.error("SabPaisa PG 3.0 Initiation failed. Falling back to Classic AES:", pg3Error);
