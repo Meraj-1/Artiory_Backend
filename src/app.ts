@@ -61,6 +61,19 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
   next();
 });
+
+import connectDB from "./config/db";
+
+// Ensure active DB connection for serverless invocations
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+  } catch (err: any) {
+    console.error("DB connection error in request middleware:", err.message);
+  }
+  next();
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

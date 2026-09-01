@@ -53,6 +53,17 @@ app.use((req, res, next) => {
     }
     next();
 });
+const db_1 = __importDefault(require("./config/db"));
+// Ensure active DB connection for serverless invocations
+app.use(async (req, res, next) => {
+    try {
+        await (0, db_1.default)();
+    }
+    catch (err) {
+        console.error("DB connection error in request middleware:", err.message);
+    }
+    next();
+});
 app.use(express_1.default.json());
 app.use(express_1.default.urlencoded({ extended: true }));
 app.get("/", (req, res) => {
