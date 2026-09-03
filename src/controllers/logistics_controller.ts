@@ -1692,7 +1692,7 @@ export const renderOrderInvoiceHtml = async (req: Request, res: Response): Promi
           <div class="company-brand">ARTIORY</div>
           <div class="company-sub-brand">Athena Design Studios</div>
           <div class="company-sub">
-            <b>Regd. Office:</b> 102 Chhadva Residency, Plot No.7, Moti Baug, V N Purav Marg, Chembur, Mumbai 400071<br>
+            <b>Office:</b> 102 Chhadva Residency, Plot No.7, Moti Baug, V N Purav Marg, Chembur, Mumbai 400071<br>
             <b>Support Email:</b> contact@artiory.com &nbsp;|&nbsp; <b>Website:</b> www.artiory.com
           </div>
         </td>
@@ -1730,7 +1730,7 @@ export const renderOrderInvoiceHtml = async (req: Request, res: Response): Promi
             ${addressLine2 ? `<b>Landmark / Area:</b> ${addressLine2}<br>` : ''}
             <b>City / District:</b> ${orderDoc.shippingAddress?.city || 'Mumbai'}<br>
             <b>State & Postal PIN:</b> ${stateName} - <span style="font-family: monospace; font-weight: 700;">${pin}</span><br>
-            <b>Contact Details:</b> 📞 ${customerPhone} &nbsp;|&nbsp; ✉️ ${customerEmail}<br>
+            <b>Contact Details:</b> ${customerPhone} &nbsp;|&nbsp; ${customerEmail}<br>
             <b>Customer GSTIN:</b> Unregistered Consumer (B2C)
           </td>
           <td>
