@@ -14,7 +14,7 @@ export const createOrder = async (
       totalPrice,
       shippingAddress,
       discountAmount = 0,
-      shippingCharge = 149,
+      shippingCharge = 0,
       couponCode = "",
     } = req.body;
 
@@ -72,27 +72,57 @@ export const getMyOrders = async (
       return res.status(401).json({ message: "Not authorized" });
     }
 
-    const orders = await Order.find({ user: req.user._id as any })
-      .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
-      .sort({ createdAt: -1 });
+    const userId = req.user._id as any;
 
-    const pending = orders.filter((o) => o.status === "Pending" && o.clientTxnId);
-    if (pending.length > 0) {
+    // 1. Find any Pending orders for this user to reconcile or delete if abandoned/cancelled
+    const pendingOrders = await Order.find({ user: userId, status: "Pending" });
+    if (pendingOrders.length > 0) {
       await Promise.all(
-        pending.map(async (o) => {
+        pendingOrders.map(async (o) => {
           try {
-            const status = await querySabPaisaStatus(o.clientTxnId!);
-            if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
-              o.status = "Paid";
-              await o.save();
+            if (o.clientTxnId) {
+              const status = await querySabPaisaStatus(o.clientTxnId);
+              if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
+                o.status = "Paid";
+                await o.save();
+                if (o.user) {
+                  await User.findByIdAndUpdate(o.user, { $set: { cart: [] } });
+                }
+                return;
+              }
             }
-          } catch (e) {}
+
+            // If payment failed, expired, cancelled, or initiated >15 mins ago without payment -> delete & restore stock
+            const isStale = (Date.now() - new Date(o.createdAt).getTime()) > 15 * 60 * 1000;
+            if (isStale || !o.clientTxnId) {
+              if (o.orderItems && o.orderItems.length > 0) {
+                for (const item of o.orderItems) {
+                  await Product.findByIdAndUpdate(item.productId, {
+                    $inc: { stockQuantity: item.qty }
+                  });
+                }
+              }
+              await Order.findByIdAndDelete(o._id);
+              console.log(`Cleaned up unpaid/abandoned order ${o._id} from database`);
+            }
+          } catch (e) {
+            console.error(`Pending order check error for ${o._id}:`, e);
+          }
         })
       );
     }
 
-    res.status(200).json(orders);
+    // 2. Fetch and return ONLY confirmed Paid, Shipped, In-Transit, Delivered orders
+    const confirmedOrders = await Order.find({
+      user: userId,
+      status: { $in: ["Paid", "Shipped", "Delivered", "In-Transit"] }
+    })
+      .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json(confirmedOrders);
   } catch (error) {
+    console.error("Get My Orders Error:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
@@ -116,6 +146,15 @@ export const getOrderById = async (
             if (order.user) {
               await User.findByIdAndUpdate(order.user, { $set: { cart: [] } });
             }
+          } else if (status === "EXPIRED" || status === "FAILED" || status === "0300" || status === "0200") {
+            // Restore stock and delete unpaid order
+            for (const item of order.orderItems) {
+              await Product.findByIdAndUpdate(item.productId, {
+                $inc: { stockQuantity: item.qty }
+              });
+            }
+            await Order.findByIdAndDelete(order._id);
+            return res.status(404).json({ message: "Order payment was not completed" });
           }
         } catch (e) {
           console.error("Order live status enquiry check error:", e);
@@ -137,56 +176,52 @@ export const getAllOrders = async (
   res: Response
 ): Promise<any> => {
   try {
-    // 1. Fetch all orders
-    const allOrders = await Order.find()
-      .populate("user", "name email number")
-      .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
-      .sort({ createdAt: -1 });
+    // 1. Reconcile or clean up all Pending orders
+    const pendingOrders = await Order.find({ status: "Pending" });
 
-    // 2. Reconcile any Pending orders that have a clientTxnId directly from SabPaisa
-    const pendingOrdersToReconcile = allOrders.filter(
-      (order) => order.status === "Pending" && order.clientTxnId
-    );
-
-    if (pendingOrdersToReconcile.length > 0) {
+    if (pendingOrders.length > 0) {
       await Promise.all(
-        pendingOrdersToReconcile.map(async (order) => {
+        pendingOrders.map(async (order) => {
           try {
-            const status = await querySabPaisaStatus(order.clientTxnId!);
-            if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
-              order.status = "Paid";
-              await order.save();
-              console.log(`Reconciled Order ${order._id} dynamically: status set to Paid`);
-            } else if (
-              status === "EXPIRED" ||
-              status === "FAILED" ||
-              status === "0300" ||
-              status === "0200"
-            ) {
-              order.status = "Failed";
-              // Restore stock for failed reconciliation
-              for (const item of order.orderItems) {
-                await Product.findByIdAndUpdate(item.productId, {
-                  $inc: { stockQuantity: item.qty }
-                });
+            if (order.clientTxnId) {
+              const status = await querySabPaisaStatus(order.clientTxnId);
+              if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
+                order.status = "Paid";
+                await order.save();
+                console.log(`Reconciled Order ${order._id} to Paid`);
+                return;
               }
-              await order.save();
-              console.log(`Reconciled Order ${order._id} dynamically: status set to Failed and stock restored`);
+            }
+
+            // If failed, cancelled or stale (>15 mins) -> delete from DB and restore stock
+            const isStale = (Date.now() - new Date(order.createdAt).getTime()) > 15 * 60 * 1000;
+            if (isStale || !order.clientTxnId) {
+              if (order.orderItems && order.orderItems.length > 0) {
+                for (const item of order.orderItems) {
+                  await Product.findByIdAndUpdate(item.productId, {
+                    $inc: { stockQuantity: item.qty }
+                  });
+                }
+              }
+              await Order.findByIdAndDelete(order._id);
+              console.log(`Cleaned up unpaid pending order ${order._id} from database`);
             }
           } catch (err) {
-            console.error(`Reconciliation failed for order ${order._id}:`, err);
+            console.error(`Reconciliation/cleanup error for order ${order._id}:`, err);
           }
         })
       );
     }
 
-    // 3. Return paid, shipped, delivered, or in-transit orders to dashboard
-    const activeOrders = allOrders.filter((order) =>
-      ["Paid", "Shipped", "Delivered", "In-Transit"].includes(order.status) ||
-      order.shipmentStatus !== "Unshipped"
-    );
+    // 2. Return ONLY confirmed Paid, Shipped, Delivered, In-Transit orders to the dashboard
+    const confirmedOrders = await Order.find({
+      status: { $in: ["Paid", "Shipped", "Delivered", "In-Transit"] }
+    })
+      .populate("user", "name email number")
+      .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
+      .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, data: activeOrders });
+    res.status(200).json({ success: true, data: confirmedOrders });
   } catch (error) {
     console.error("Get All Orders Error:", error);
     res.status(500).json({ message: "Server Error" });

@@ -62,14 +62,20 @@ export const AddAddress = async (req: Request, res: Response): Promise<any> => {
     }
 
     const {
+      firstName,
+      lastName,
       type,
       home,
       street,
+      landmark,
       city,
       state,
       postalCode,
-      country,
+      country = "India",
       phone,
+      alternatePhone,
+      email,
+      isDefault,
     } = req.body;
 
     // Validation
@@ -79,25 +85,30 @@ export const AddAddress = async (req: Request, res: Response): Promise<any> => {
       !city ||
       !state ||
       !postalCode ||
-      !country ||
       !phone
     ) {
       return res.status(400).json({
         success: false,
-        message: "All fields are required.",
+        message: "Flat/House, Street, City, State, PIN code, and Mobile number are required.",
       });
     }
 
     const address = {
       userId: user._id,
+      firstName: firstName || "",
+      lastName: lastName || "",
       type: type || "Home",
       home,
       street,
+      landmark: landmark || "",
       city,
       state,
       postalCode,
-      country,
+      country: country || "India",
       phone,
+      alternatePhone: alternatePhone || "",
+      email: email || "",
+      isDefault: Boolean(isDefault),
       createdAt: new Date(),
       updatedAt: new Date()
     };
@@ -169,13 +180,20 @@ export const updateAddress = async (req: Request, res: Response): Promise<any> =
     }
 
     const {
+      firstName,
+      lastName,
+      type,
       home,
       street,
+      landmark,
       city,
       state,
       postalCode,
       country,
       phone,
+      alternatePhone,
+      email,
+      isDefault,
     } = req.body;
 
     const db = mongoose.connection.db;
@@ -197,13 +215,20 @@ export const updateAddress = async (req: Request, res: Response): Promise<any> =
     const updateFields: any = {
       updatedAt: new Date()
     };
+    if (firstName !== undefined) updateFields.firstName = firstName;
+    if (lastName !== undefined) updateFields.lastName = lastName;
+    if (type !== undefined) updateFields.type = type;
     if (home !== undefined) updateFields.home = home;
     if (street !== undefined) updateFields.street = street;
+    if (landmark !== undefined) updateFields.landmark = landmark;
     if (city !== undefined) updateFields.city = city;
     if (state !== undefined) updateFields.state = state;
     if (postalCode !== undefined) updateFields.postalCode = postalCode;
     if (country !== undefined) updateFields.country = country;
     if (phone !== undefined) updateFields.phone = phone;
+    if (alternatePhone !== undefined) updateFields.alternatePhone = alternatePhone;
+    if (email !== undefined) updateFields.email = email;
+    if (isDefault !== undefined) updateFields.isDefault = Boolean(isDefault);
 
     await db.collection("addresses").updateOne(
       { _id: addressObjectId },

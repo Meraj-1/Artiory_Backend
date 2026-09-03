@@ -63,8 +63,13 @@ const normalizeProductImageFields = (product: any) => {
     ? rawThumbnail
     : (images.length > 0 ? images[0] : "");
 
+  const rawWeight = Number(productData?.weight || productData?.weightGrams || 0);
+  const normalizedWeightGrams = rawWeight > 0 && rawWeight <= 5 ? Math.round(rawWeight * 1000) : rawWeight;
+
   return {
     ...productData,
+    weight: normalizedWeightGrams,
+    weightGrams: normalizedWeightGrams,
     image: thumbnail,
     thumbnail,
     images,
@@ -111,9 +116,10 @@ const buildProductPayload = (body: any) => {
     }
   }
 
-  // Auto-convert grams (>5) to kg, otherwise keep kg input
-  const rawWeight = Number(body.weight || 0);
-  const normalizedWeight = rawWeight > 5 ? rawWeight / 1000 : rawWeight;
+  // Weight in grams (e.g. 120 for 120 gm)
+  const rawWeight = Number(body.weight ?? body.weightGrams ?? 0);
+  // If a legacy value <= 5 was passed (previously stored as kg), convert to grams, otherwise keep grams as entered
+  const normalizedWeight = rawWeight > 0 && rawWeight <= 5 ? Math.round(rawWeight * 1000) : rawWeight;
 
   const payload: any = {
     productName: body.productName || body.name || "",
@@ -136,6 +142,7 @@ const buildProductPayload = (body: any) => {
     shortDescription: body.shortDescription || body.shortDesc || "",
     detailedDescription: body.detailedDescription || body.detailedDesc || "",
     weight: normalizedWeight,
+    weightGrams: normalizedWeight,
     dimensions: typeof dimensions === "object" ? dimensions : {},
     gst: Number(body.gst || 0),
     active: body.active !== undefined ? body.active : true,
