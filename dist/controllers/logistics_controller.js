@@ -1587,7 +1587,7 @@ const renderOrderInvoiceHtml = async (req, res) => {
           <div class="company-brand">ARTIORY</div>
           <div class="company-sub-brand">Athena Design Studios</div>
           <div class="company-sub">
-            <b>Regd. Office:</b> 102 Chhadva Residency, Plot No.7, Moti Baug, V N Purav Marg, Chembur, Mumbai 400071<br>
+            <b>Office:</b> 102 Chhadva Residency, Plot No.7, Moti Baug, V N Purav Marg, Chembur, Mumbai 400071<br>
             <b>Support Email:</b> contact@artiory.com &nbsp;|&nbsp; <b>Website:</b> www.artiory.com
           </div>
         </td>
