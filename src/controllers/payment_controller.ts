@@ -361,8 +361,10 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
           $set: { cart: [] }
         });
       }
+      await order.save();
+      console.log(`SabPaisa Callback Successful: Order ${orderId} status set to Paid`);
     } else {
-      order.status = "Failed";
+      // Payment Failed, Cancelled, or Timed Out -> Restore product stock and completely DELETE unpaid order from database
       if (order.orderItems && order.orderItems.length > 0) {
         for (const item of order.orderItems) {
           await Product.findByIdAndUpdate(item.productId, {
@@ -370,11 +372,9 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
           });
         }
       }
+      await Order.findByIdAndDelete(orderId);
+      console.log(`SabPaisa Callback Cancelled/Failed: Unpaid order ${orderId} completely deleted from DB and stock restored.`);
     }
-
-    await order.save();
-
-    console.log(`SabPaisa Callback Successful: Order ${orderId} status set to ${order.status}`);
 
     let displayAmount = amount;
     if (Number(amount) > 1000 && !amount.toString().includes(".")) {
@@ -394,11 +394,11 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
       activeFrontendUrl = "https://artiory.com";
     }
 
-    // Redirect directly to user profile order section
+    // Redirect to profile orders if success, or back to checkout if failed/cancelled
     if (isSuccess) {
       return res.redirect(`${activeFrontendUrl}/profile?tab=orders&highlight=${orderId}`);
     } else {
-      return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentFailed&orderId=${orderId}`);
+      return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed`);
     }
   } catch (err: any) {
     console.error("SabPaisa Callback Error:", err);
@@ -448,16 +448,26 @@ export const enquireSabPaisaPayment = async (req: Request, res: Response): Promi
       status.toUpperCase() === "TXN_SUCCESS" ||
       status.toUpperCase() === "PAID";
 
-    // Auto-update Order in DB if found
+    // Auto-update or clean up Order in DB
     const targetOrderId = txnIdToQuery.split("-")[0];
     if (mongoose.Types.ObjectId.isValid(targetOrderId)) {
       const order = await Order.findById(targetOrderId);
-      if (order && isSuccess && order.status !== "Paid") {
-        order.status = "Paid";
-        order.clientTxnId = txnIdToQuery;
-        await order.save();
-        if (order.user) {
-          await User.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+      if (order) {
+        if (isSuccess && order.status !== "Paid") {
+          order.status = "Paid";
+          order.clientTxnId = txnIdToQuery;
+          await order.save();
+          if (order.user) {
+            await User.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+          }
+        } else if (!isSuccess && (status === "EXPIRED" || status === "FAILED" || status === "0300" || status === "0200")) {
+          // Restore stock and delete unpaid order
+          for (const item of order.orderItems) {
+            await Product.findByIdAndUpdate(item.productId, {
+              $inc: { stockQuantity: item.qty }
+            });
+          }
+          await Order.findByIdAndDelete(order._id);
         }
       }
     }

@@ -28,7 +28,7 @@ export const getCustomersList = async (req: Request, res: Response): Promise<voi
 
     // Fetch all orders and addresses
     const [orders, addresses] = await Promise.all([
-      Order.find().sort({ createdAt: -1 }),
+      Order.find({ status: { $in: ["Paid", "Shipped", "Delivered", "In-Transit"] } }).sort({ createdAt: -1 }),
       db.collection("addresses").find().toArray()
     ]);
 
