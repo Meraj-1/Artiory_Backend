@@ -133,7 +133,7 @@ const initiateSabPaisaPayment = async (req, res) => {
         const cleanUsername = isDummyUser(process.env.SABPAISA_TRANS_USER_NAME) ? "" : (process.env.SABPAISA_TRANS_USER_NAME || "");
         const cleanPassword = isDummyUser(process.env.SABPAISA_TRANS_USER_PASSWORD) ? "" : (process.env.SABPAISA_TRANS_USER_PASSWORD || "");
         const originHeader = req.body?.returnUrl || req.headers.origin || req.headers.referer || "";
-        let activeFrontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+        let activeFrontendUrl = process.env.FRONTEND_URL || "https://artiory.com";
         if (originHeader.includes("localhost:3000") || originHeader.includes("127.0.0.1:3000")) {
             activeFrontendUrl = "http://localhost:3000";
         }
@@ -143,7 +143,7 @@ const initiateSabPaisaPayment = async (req, res) => {
         else if (originHeader.includes("localhost:3002") || originHeader.includes("127.0.0.1:3002")) {
             activeFrontendUrl = "http://localhost:3002";
         }
-        else if (originHeader.includes("artiory.com")) {
+        else if (originHeader.includes("artiory.com") || originHeader.includes("3011") || process.env.NODE_ENV === "production") {
             activeFrontendUrl = "https://artiory.com";
         }
         order.returnUrl = activeFrontendUrl;
@@ -347,7 +347,13 @@ const sabPaisaCallback = async (req, res) => {
             displayAmount = (Number(amount) / 100).toFixed(2);
         }
         const originHeader = req.headers.origin || req.headers.referer || "";
-        let activeFrontendUrl = order?.returnUrl || process.env.FRONTEND_URL || "http://localhost:3000";
+        let activeFrontendUrl = order?.returnUrl || process.env.FRONTEND_URL || "https://artiory.com";
+
+        // Sanitize in case returnUrl was stored with internal port 3011 or localhost in production
+        if (activeFrontendUrl.includes("3011") || (process.env.NODE_ENV === "production" && activeFrontendUrl.includes("localhost"))) {
+            activeFrontendUrl = "https://artiory.com";
+        }
+
         if (originHeader.includes("localhost:3000") || originHeader.includes("127.0.0.1:3000")) {
             activeFrontendUrl = "http://localhost:3000";
         }
@@ -357,7 +363,7 @@ const sabPaisaCallback = async (req, res) => {
         else if (originHeader.includes("localhost:3002") || originHeader.includes("127.0.0.1:3002")) {
             activeFrontendUrl = "http://localhost:3002";
         }
-        else if (originHeader.includes("artiory.com")) {
+        else if (originHeader.includes("artiory.com") || originHeader.includes("3011") || process.env.NODE_ENV === "production") {
             activeFrontendUrl = "https://artiory.com";
         }
         // Redirect directly to user profile order section
@@ -370,7 +376,7 @@ const sabPaisaCallback = async (req, res) => {
     }
     catch (err) {
         console.error("SabPaisa Callback Error:", err);
-        return res.redirect(`${process.env.FRONTEND_URL || "http://localhost:3000"}/profile?tab=orders`);
+        return res.redirect(`${process.env.FRONTEND_URL || "https://artiory.com"}/profile?tab=orders`);
     }
 };
 exports.sabPaisaCallback = sabPaisaCallback;
