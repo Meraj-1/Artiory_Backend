@@ -38,6 +38,7 @@ export interface IOrder extends Document {
   shipmentStatus: string;
   shippingLabelUrl?: string;
   clientTxnId?: string;
+  sabpaisaTxnId?: string;
   returnUrl?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -112,6 +113,9 @@ const orderSchema = new mongoose.Schema<IOrder>(
       type: String
     },
     clientTxnId: {
+      type: String
+    },
+    sabpaisaTxnId: {
       type: String
     },
     returnUrl: {

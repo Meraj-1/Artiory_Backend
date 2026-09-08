@@ -74,6 +74,9 @@ const orderSchema = new mongoose_1.default.Schema({
     clientTxnId: {
         type: String
     },
+    sabpaisaTxnId: {
+        type: String
+    },
     returnUrl: {
         type: String
     }

@@ -82,29 +82,14 @@ export const getMyOrders = async (
         pendingOrders.map(async (o) => {
           try {
             if (o.clientTxnId) {
-              const status = await querySabPaisaStatus(o.clientTxnId);
-              if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
+              const status = (await querySabPaisaStatus(o.clientTxnId) || "").toUpperCase().trim();
+              if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID" || status === "0200" || status === "OK") {
                 o.status = "Paid";
                 await o.save();
                 if (o.user) {
                   await User.findByIdAndUpdate(o.user, { $set: { cart: [] } });
                 }
-                return;
               }
-            }
-
-            // If payment failed, expired, cancelled, or initiated >15 mins ago without payment -> delete & restore stock
-            const isStale = (Date.now() - new Date(o.createdAt).getTime()) > 15 * 60 * 1000;
-            if (isStale || !o.clientTxnId) {
-              if (o.orderItems && o.orderItems.length > 0) {
-                for (const item of o.orderItems) {
-                  await Product.findByIdAndUpdate(item.productId, {
-                    $inc: { stockQuantity: item.qty }
-                  });
-                }
-              }
-              await Order.findByIdAndDelete(o._id);
-              console.log(`Cleaned up unpaid/abandoned order ${o._id} from database`);
             }
           } catch (e) {
             console.error(`Pending order check error for ${o._id}:`, e);
@@ -162,22 +147,16 @@ export const getOrderById = async (
     if (order) {
       if (order.status === "Pending" && order.clientTxnId) {
         try {
-          const status = await querySabPaisaStatus(order.clientTxnId);
-          if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
+          const status = (await querySabPaisaStatus(order.clientTxnId) || "").toUpperCase().trim();
+          if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID" || status === "0200" || status === "OK") {
             order.status = "Paid";
             await order.save();
             if (order.user) {
               await User.findByIdAndUpdate(order.user, { $set: { cart: [] } });
             }
-          } else if (status === "EXPIRED" || status === "FAILED" || status === "0300" || status === "0200") {
-            // Restore stock and delete unpaid order
-            for (const item of order.orderItems) {
-              await Product.findByIdAndUpdate(item.productId, {
-                $inc: { stockQuantity: item.qty }
-              });
-            }
-            await Order.findByIdAndDelete(order._id);
-            return res.status(404).json({ message: "Order payment was not completed" });
+          } else if (status === "EXPIRED" || status === "FAILED" || status === "0300") {
+            order.status = "Failed";
+            await order.save();
           }
         } catch (e) {
           console.error("Order live status enquiry check error:", e);
@@ -199,7 +178,7 @@ export const getAllOrders = async (
   res: Response
 ): Promise<any> => {
   try {
-    // 1. Reconcile or clean up all Pending orders
+    // 1. Try to auto-reconcile any Pending orders without deleting them
     const pendingOrders = await Order.find({ status: "Pending" });
 
     if (pendingOrders.length > 0) {
@@ -207,44 +186,27 @@ export const getAllOrders = async (
         pendingOrders.map(async (order) => {
           try {
             if (order.clientTxnId) {
-              const status = await querySabPaisaStatus(order.clientTxnId);
-              if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
+              const status = (await querySabPaisaStatus(order.clientTxnId) || "").toUpperCase().trim();
+              if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID" || status === "0200" || status === "OK") {
                 order.status = "Paid";
                 await order.save();
                 console.log(`Reconciled Order ${order._id} to Paid`);
-                return;
               }
-            }
-
-            // If failed, cancelled or stale (>15 mins) -> delete from DB and restore stock
-            const isStale = (Date.now() - new Date(order.createdAt).getTime()) > 15 * 60 * 1000;
-            if (isStale || !order.clientTxnId) {
-              if (order.orderItems && order.orderItems.length > 0) {
-                for (const item of order.orderItems) {
-                  await Product.findByIdAndUpdate(item.productId, {
-                    $inc: { stockQuantity: item.qty }
-                  });
-                }
-              }
-              await Order.findByIdAndDelete(order._id);
-              console.log(`Cleaned up unpaid pending order ${order._id} from database`);
             }
           } catch (err) {
-            console.error(`Reconciliation/cleanup error for order ${order._id}:`, err);
+            console.error(`Reconciliation check error for order ${order._id}:`, err);
           }
         })
       );
     }
 
-    // 2. Return ONLY confirmed Paid, Shipped, Delivered, In-Transit orders to the dashboard
-    const confirmedOrders = await Order.find({
-      status: { $in: ["Paid", "Shipped", "Delivered", "In-Transit"] }
-    })
+    // 2. Return ALL orders to the dashboard so admin has full visibility
+    const allOrders = await Order.find()
       .populate("user", "name email number")
       .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
       .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, data: confirmedOrders });
+    res.status(200).json({ success: true, data: allOrders });
   } catch (error) {
     console.error("Get All Orders Error:", error);
     res.status(500).json({ message: "Server Error" });
@@ -256,21 +218,45 @@ export const reconcileOrder = async (
   res: Response
 ): Promise<any> => {
   try {
-    const { orderId, clientTxnId } = req.body;
+    const { orderId, clientTxnId, forcePaid } = req.body;
     if (!orderId && !clientTxnId) {
       return res.status(400).json({ success: false, message: "orderId or clientTxnId is required" });
     }
 
-    const order = await Order.findById(orderId || (clientTxnId ? clientTxnId.split("-")[0] : null));
+    let order = null;
+    if (orderId && mongoose.Types.ObjectId.isValid(orderId)) {
+      order = await Order.findById(orderId);
+    }
+    if (!order && clientTxnId) {
+      const parsedId = clientTxnId.split("-")[0];
+      if (mongoose.Types.ObjectId.isValid(parsedId)) {
+        order = await Order.findById(parsedId);
+      }
+      if (!order) {
+        order = await Order.findOne({ clientTxnId });
+      }
+    }
+
     if (!order) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
 
+    // If admin explicitly marked as Paid with forcePaid flag
+    if (forcePaid) {
+      order.status = "Paid";
+      if (clientTxnId) order.clientTxnId = clientTxnId;
+      await order.save();
+      if (order.user) {
+        await User.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+      }
+      return res.status(200).json({ success: true, message: "Order successfully marked as Paid!", status: order.status });
+    }
+
     const txnToQuery = clientTxnId || order.clientTxnId || order._id.toString();
     order.clientTxnId = txnToQuery;
-    const status = await querySabPaisaStatus(txnToQuery);
+    const status = (await querySabPaisaStatus(txnToQuery) || "").toUpperCase().trim();
 
-    if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID") {
+    if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID" || status === "0200" || status === "OK") {
       order.status = "Paid";
       await order.save();
       if (order.user) {
@@ -278,10 +264,10 @@ export const reconcileOrder = async (
       }
       return res.status(200).json({ success: true, message: "Order reconciled successfully with SabPaisa! Status set to Paid.", status: order.status });
     } else {
-      if (status === "EXPIRED" || status === "FAILED" || status === "0300" || status === "0200") {
+      if (status === "EXPIRED" || status === "FAILED" || status === "0300") {
         order.status = "Failed";
+        await order.save();
       }
-      await order.save();
       return res.status(400).json({ success: false, message: `SabPaisa returned status: ${status}`, status });
     }
   } catch (error: any) {

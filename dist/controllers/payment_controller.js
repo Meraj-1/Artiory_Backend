@@ -9,7 +9,6 @@ const https_1 = __importDefault(require("https"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const Order_model_1 = __importDefault(require("../models/Order_model"));
 const User_model_1 = __importDefault(require("../models/User_model"));
-const Product_model_1 = __importDefault(require("../models/Product_model"));
 /**
  * Helper to perform secure HTTPS POST requests to SabPaisa PG 3.0 REST API
  */
@@ -314,35 +313,51 @@ const sabPaisaCallback = async (req, res) => {
         }
         // Extract Order ID (first segment of clientTxnId)
         const orderId = clientTxnId.split("-")[0];
-        const order = await Order_model_1.default.findById(orderId);
+        let order = null;
+        if (mongoose_1.default.Types.ObjectId.isValid(orderId)) {
+            order = await Order_model_1.default.findById(orderId);
+        }
         if (!order) {
-            console.error(`SabPaisa Callback: Order not found: ${orderId}`);
+            order = await Order_model_1.default.findOne({ clientTxnId });
+        }
+        if (!order) {
+            console.error(`SabPaisa Callback: Order not found for clientTxnId: ${clientTxnId}, orderId: ${orderId}`);
+            if (req.headers.accept?.includes("application/json") || req.headers["x-forwarded-by"] === "nextjs" || req.is("application/json")) {
+                return res.status(404).json({ success: false, message: "Order not found", clientTxnId });
+            }
             return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=OrderNotFound`);
         }
-        const isSuccess = statusCode.toUpperCase() === "SUCCESS" ||
-            statusCode.toUpperCase() === "TXN_SUCCESS" ||
-            statusCode.toUpperCase() === "PAID";
+        const upperStatus = (statusCode || "").toUpperCase().trim();
+        const isSuccess = upperStatus === "SUCCESS" ||
+            upperStatus === "TXN_SUCCESS" ||
+            upperStatus === "PAID" ||
+            upperStatus === "0000" ||
+            upperStatus === "0200" ||
+            upperStatus === "OK";
         if (isSuccess) {
             order.status = "Paid";
+            if (sabpaisaTxnId && sabpaisaTxnId !== "N/A") {
+                order.sabpaisaTxnId = sabpaisaTxnId;
+            }
+            if (clientTxnId) {
+                order.clientTxnId = clientTxnId;
+            }
             if (order.user) {
                 await User_model_1.default.findByIdAndUpdate(order.user, {
                     $set: { cart: [] }
                 });
             }
             await order.save();
-            console.log(`SabPaisa Callback Successful: Order ${orderId} status set to Paid`);
+            console.log(`SabPaisa Callback Successful: Order ${order._id} status set to Paid (Txn: ${sabpaisaTxnId})`);
         }
         else {
-            // Payment Failed, Cancelled, or Timed Out -> Restore product stock and completely DELETE unpaid order from database
-            if (order.orderItems && order.orderItems.length > 0) {
-                for (const item of order.orderItems) {
-                    await Product_model_1.default.findByIdAndUpdate(item.productId, {
-                        $inc: { stockQuantity: item.qty }
-                    });
-                }
+            // Mark as Failed — DO NOT delete the order so admin and user retain full records!
+            order.status = "Failed";
+            if (sabpaisaTxnId && sabpaisaTxnId !== "N/A") {
+                order.sabpaisaTxnId = sabpaisaTxnId;
             }
-            await Order_model_1.default.findByIdAndDelete(orderId);
-            console.log(`SabPaisa Callback Cancelled/Failed: Unpaid order ${orderId} completely deleted from DB and stock restored.`);
+            await order.save();
+            console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} status set to Failed`);
         }
         let displayAmount = amount;
         if (Number(amount) > 1000 && !amount.toString().includes(".")) {
@@ -366,16 +381,33 @@ const sabPaisaCallback = async (req, res) => {
         else if (originHeader.includes("artiory.com") || originHeader.includes("3011") || process.env.NODE_ENV === "production") {
             activeFrontendUrl = "https://artiory.com";
         }
-        // Redirect to profile orders if success, or back to checkout if failed/cancelled
+        // Support JSON response when proxied by Next.js frontend route
+        if (req.headers.accept?.includes("application/json") || req.headers["x-forwarded-by"] === "nextjs" || req.is("application/json")) {
+            return res.status(200).json({
+                success: true,
+                isSuccess,
+                orderId: order._id.toString(),
+                clientTxnId,
+                sabpaisaTxnId,
+                status: order.status,
+                redirectUrl: isSuccess
+                    ? `${activeFrontendUrl}/profile?tab=orders&highlight=${order._id}`
+                    : `${activeFrontendUrl}/checkout?error=PaymentFailed&orderId=${order._id}`
+            });
+        }
+        // Direct browser redirect
         if (isSuccess) {
-            return res.redirect(`${activeFrontendUrl}/profile?tab=orders&highlight=${orderId}`);
+            return res.redirect(`${activeFrontendUrl}/profile?tab=orders&highlight=${order._id}`);
         }
         else {
-            return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed`);
+            return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed&orderId=${order._id}`);
         }
     }
     catch (err) {
         console.error("SabPaisa Callback Error:", err);
+        if (req.headers.accept?.includes("application/json") || req.headers["x-forwarded-by"] === "nextjs" || req.is("application/json")) {
+            return res.status(500).json({ success: false, message: "Callback processing error", error: err.message });
+        }
         return res.redirect(`${process.env.FRONTEND_URL || "https://artiory.com"}/profile?tab=orders`);
     }
 };
@@ -411,31 +443,34 @@ const enquireSabPaisaPayment = async (req, res) => {
         const enquiryResponse = await pg3Request(endpoint, SABPAISA_AUTH_KEY, payload);
         console.log("SabPaisa PG 3.0 Enquiry Response:", JSON.stringify(enquiryResponse));
         const status = enquiryResponse?.status || enquiryResponse?.statusCode || enquiryResponse?.data?.status || "PENDING";
-        const isSuccess = status.toUpperCase() === "SUCCESS" ||
-            status.toUpperCase() === "TXN_SUCCESS" ||
-            status.toUpperCase() === "PAID";
-        // Auto-update or clean up Order in DB
+        const upperStatus = (status || "").toUpperCase().trim();
+        const isSuccess = upperStatus === "SUCCESS" ||
+            upperStatus === "TXN_SUCCESS" ||
+            upperStatus === "PAID" ||
+            upperStatus === "0000" ||
+            upperStatus === "0200" ||
+            upperStatus === "OK";
+        // Auto-update Order in DB
         const targetOrderId = txnIdToQuery.split("-")[0];
+        let order = null;
         if (mongoose_1.default.Types.ObjectId.isValid(targetOrderId)) {
-            const order = await Order_model_1.default.findById(targetOrderId);
-            if (order) {
-                if (isSuccess && order.status !== "Paid") {
-                    order.status = "Paid";
-                    order.clientTxnId = txnIdToQuery;
-                    await order.save();
-                    if (order.user) {
-                        await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
-                    }
+            order = await Order_model_1.default.findById(targetOrderId);
+        }
+        if (!order) {
+            order = await Order_model_1.default.findOne({ clientTxnId: txnIdToQuery });
+        }
+        if (order) {
+            if (isSuccess && order.status !== "Paid") {
+                order.status = "Paid";
+                order.clientTxnId = txnIdToQuery;
+                await order.save();
+                if (order.user) {
+                    await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
                 }
-                else if (!isSuccess && (status === "EXPIRED" || status === "FAILED" || status === "0300" || status === "0200")) {
-                    // Restore stock and delete unpaid order
-                    for (const item of order.orderItems) {
-                        await Product_model_1.default.findByIdAndUpdate(item.productId, {
-                            $inc: { stockQuantity: item.qty }
-                        });
-                    }
-                    await Order_model_1.default.findByIdAndDelete(order._id);
-                }
+            }
+            else if (!isSuccess && (upperStatus === "EXPIRED" || upperStatus === "FAILED" || upperStatus === "0300")) {
+                order.status = "Failed";
+                await order.save();
             }
         }
         return res.status(200).json({
