@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import Order from "../models/Order_model";
 import Product from "../models/Product_model";
 import User from "../models/User_model";
@@ -113,8 +114,13 @@ export const getMyOrders = async (
     }
 
     // 2. Fetch and return ONLY confirmed Paid, Shipped, In-Transit, Delivered orders
+    const userFilter: any[] = [{ user: userId }];
+    if (req.user?.email) {
+      userFilter.push({ "shippingAddress.email": req.user.email });
+    }
+
     const confirmedOrders = await Order.find({
-      user: userId,
+      $or: userFilter,
       status: { $in: ["Paid", "Shipped", "Delivered", "In-Transit"] }
     })
       .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
@@ -132,9 +138,26 @@ export const getOrderById = async (
   res: Response
 ): Promise<any> => {
   try {
-    const order = await Order.findById(req.params.id)
-      .populate("user", "name email profileImage")
-      .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight");
+    const rawParam = req.params.id;
+    const rawId = Array.isArray(rawParam) ? rawParam[0] : rawParam;
+    const cleanId = typeof rawId === "string" ? rawId.trim().replace(/^#?ORD-?/i, "") : "";
+
+    let order = null;
+    if (mongoose.Types.ObjectId.isValid(cleanId) && cleanId.length === 24) {
+      order = await Order.findById(cleanId)
+        .populate("user", "name email profileImage")
+        .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight");
+    } else {
+      order = await Order.findOne({
+        $or: [
+          { clientTxnId: cleanId },
+          { awbNumber: cleanId },
+          { logisticsOrderId: cleanId }
+        ]
+      })
+        .populate("user", "name email profileImage")
+        .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight");
+    }
 
     if (order) {
       if (order.status === "Pending" && order.clientTxnId) {
@@ -264,5 +287,67 @@ export const reconcileOrder = async (
   } catch (error: any) {
     console.error("Reconcile Order Error:", error);
     res.status(500).json({ success: false, message: "Server Error", error: error.message });
+  }
+};
+
+export const trackOrder = async (
+  req: Request,
+  res: Response
+): Promise<any> => {
+  try {
+    const { query } = req.body;
+    if (!query || typeof query !== "string" || !query.trim()) {
+      return res.status(400).json({ success: false, message: "Order ID, Phone Number, or Email is required" });
+    }
+
+    const rawQuery = query.trim();
+    const cleanId = rawQuery.replace(/^#?ORD-?/i, "");
+    let filter: any = {};
+
+    if (mongoose.Types.ObjectId.isValid(cleanId) && cleanId.length === 24) {
+      filter = { _id: cleanId };
+    } else {
+      const digitsOnly = rawQuery.replace(/\D/g, "");
+      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawQuery);
+
+      if (digitsOnly.length >= 10) {
+        const phone10 = digitsOnly.slice(-10);
+        filter = {
+          $or: [
+            { "shippingAddress.phone": phone10 },
+            { "shippingAddress.phone": `+91${phone10}` },
+            { "shippingAddress.phone": `91${phone10}` },
+            { "shippingAddress.alternatePhone": phone10 }
+          ]
+        };
+      } else if (isEmail) {
+        filter = { "shippingAddress.email": new RegExp(`^${rawQuery.toLowerCase()}$`, "i") };
+      } else {
+        filter = {
+          $or: [
+            { clientTxnId: cleanId },
+            { awbNumber: cleanId },
+            { logisticsOrderId: cleanId }
+          ]
+        };
+      }
+    }
+
+    const orders = await Order.find(filter)
+      .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
+      .sort({ createdAt: -1 })
+      .limit(10);
+
+    if (!orders || orders.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No orders found matching your search. Please verify your Order ID, Phone Number, or Email."
+      });
+    }
+
+    return res.status(200).json({ success: true, data: orders });
+  } catch (error: any) {
+    console.error("Track Order Error:", error);
+    return res.status(500).json({ success: false, message: "Server Error", error: error.message });
   }
 };

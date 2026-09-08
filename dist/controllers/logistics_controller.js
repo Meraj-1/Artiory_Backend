@@ -1625,7 +1625,7 @@ const renderOrderInvoiceHtml = async (req, res) => {
             ${addressLine2 ? `<b>Landmark / Area:</b> ${addressLine2}<br>` : ''}
             <b>City / District:</b> ${orderDoc.shippingAddress?.city || 'Mumbai'}<br>
             <b>State & Postal PIN:</b> ${stateName} - <span style="font-family: monospace; font-weight: 700;">${pin}</span><br>
-            <b>Contact Details:</b> 📞 ${customerPhone} &nbsp;|&nbsp; ✉️ ${customerEmail}<br>
+            <b>Contact Details:</b> ${customerPhone} &nbsp;|&nbsp; ${customerEmail}<br>
             <b>Customer GSTIN:</b> Unregistered Consumer (B2C)
           </td>
           <td>

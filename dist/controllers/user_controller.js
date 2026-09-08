@@ -50,30 +50,35 @@ const AddAddress = async (req, res) => {
         if (!user) {
             return res.status(401).json({ success: false, message: "Not authorized" });
         }
-        const { type, home, street, city, state, postalCode, country, phone, } = req.body;
+        const { firstName, lastName, type, home, street, landmark, city, state, postalCode, country = "India", phone, alternatePhone, email, isDefault, } = req.body;
         // Validation
         if (!home ||
             !street ||
             !city ||
             !state ||
             !postalCode ||
-            !country ||
             !phone) {
             return res.status(400).json({
                 success: false,
-                message: "All fields are required.",
+                message: "Flat/House, Street, City, State, PIN code, and Mobile number are required.",
             });
         }
         const address = {
             userId: user._id,
+            firstName: firstName || "",
+            lastName: lastName || "",
             type: type || "Home",
             home,
             street,
+            landmark: landmark || "",
             city,
             state,
             postalCode,
-            country,
+            country: country || "India",
             phone,
+            alternatePhone: alternatePhone || "",
+            email: email || "",
+            isDefault: Boolean(isDefault),
             createdAt: new Date(),
             updatedAt: new Date()
         };
@@ -138,7 +143,7 @@ const updateAddress = async (req, res) => {
         if (!mongoose_1.default.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ success: false, message: "Invalid address ID" });
         }
-        const { home, street, city, state, postalCode, country, phone, } = req.body;
+        const { firstName, lastName, type, home, street, landmark, city, state, postalCode, country, phone, alternatePhone, email, isDefault, } = req.body;
         const db = mongoose_1.default.connection.db;
         if (!db) {
             return res.status(500).json({ success: false, message: "Database connection not available" });
@@ -154,10 +159,18 @@ const updateAddress = async (req, res) => {
         const updateFields = {
             updatedAt: new Date()
         };
+        if (firstName !== undefined)
+            updateFields.firstName = firstName;
+        if (lastName !== undefined)
+            updateFields.lastName = lastName;
+        if (type !== undefined)
+            updateFields.type = type;
         if (home !== undefined)
             updateFields.home = home;
         if (street !== undefined)
             updateFields.street = street;
+        if (landmark !== undefined)
+            updateFields.landmark = landmark;
         if (city !== undefined)
             updateFields.city = city;
         if (state !== undefined)
@@ -168,6 +181,12 @@ const updateAddress = async (req, res) => {
             updateFields.country = country;
         if (phone !== undefined)
             updateFields.phone = phone;
+        if (alternatePhone !== undefined)
+            updateFields.alternatePhone = alternatePhone;
+        if (email !== undefined)
+            updateFields.email = email;
+        if (isDefault !== undefined)
+            updateFields.isDefault = Boolean(isDefault);
         await db.collection("addresses").updateOne({ _id: addressObjectId }, { $set: updateFields });
         const updatedAddress = await db.collection("addresses").findOne({ _id: addressObjectId });
         return res.status(200).json({

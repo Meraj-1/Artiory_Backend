@@ -329,9 +329,11 @@ const sabPaisaCallback = async (req, res) => {
                     $set: { cart: [] }
                 });
             }
+            await order.save();
+            console.log(`SabPaisa Callback Successful: Order ${orderId} status set to Paid`);
         }
         else {
-            order.status = "Failed";
+            // Payment Failed, Cancelled, or Timed Out -> Restore product stock and completely DELETE unpaid order from database
             if (order.orderItems && order.orderItems.length > 0) {
                 for (const item of order.orderItems) {
                     await Product_model_1.default.findByIdAndUpdate(item.productId, {
@@ -339,21 +341,19 @@ const sabPaisaCallback = async (req, res) => {
                     });
                 }
             }
+            await Order_model_1.default.findByIdAndDelete(orderId);
+            console.log(`SabPaisa Callback Cancelled/Failed: Unpaid order ${orderId} completely deleted from DB and stock restored.`);
         }
-        await order.save();
-        console.log(`SabPaisa Callback Successful: Order ${orderId} status set to ${order.status}`);
         let displayAmount = amount;
         if (Number(amount) > 1000 && !amount.toString().includes(".")) {
             displayAmount = (Number(amount) / 100).toFixed(2);
         }
         const originHeader = req.headers.origin || req.headers.referer || "";
         let activeFrontendUrl = order?.returnUrl || process.env.FRONTEND_URL || "https://artiory.com";
-
         // Sanitize in case returnUrl was stored with internal port 3011 or localhost in production
         if (activeFrontendUrl.includes("3011") || (process.env.NODE_ENV === "production" && activeFrontendUrl.includes("localhost"))) {
             activeFrontendUrl = "https://artiory.com";
         }
-
         if (originHeader.includes("localhost:3000") || originHeader.includes("127.0.0.1:3000")) {
             activeFrontendUrl = "http://localhost:3000";
         }
@@ -366,12 +366,12 @@ const sabPaisaCallback = async (req, res) => {
         else if (originHeader.includes("artiory.com") || originHeader.includes("3011") || process.env.NODE_ENV === "production") {
             activeFrontendUrl = "https://artiory.com";
         }
-        // Redirect directly to user profile order section
+        // Redirect to profile orders if success, or back to checkout if failed/cancelled
         if (isSuccess) {
             return res.redirect(`${activeFrontendUrl}/profile?tab=orders&highlight=${orderId}`);
         }
         else {
-            return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentFailed&orderId=${orderId}`);
+            return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed`);
         }
     }
     catch (err) {
@@ -414,16 +414,27 @@ const enquireSabPaisaPayment = async (req, res) => {
         const isSuccess = status.toUpperCase() === "SUCCESS" ||
             status.toUpperCase() === "TXN_SUCCESS" ||
             status.toUpperCase() === "PAID";
-        // Auto-update Order in DB if found
+        // Auto-update or clean up Order in DB
         const targetOrderId = txnIdToQuery.split("-")[0];
         if (mongoose_1.default.Types.ObjectId.isValid(targetOrderId)) {
             const order = await Order_model_1.default.findById(targetOrderId);
-            if (order && isSuccess && order.status !== "Paid") {
-                order.status = "Paid";
-                order.clientTxnId = txnIdToQuery;
-                await order.save();
-                if (order.user) {
-                    await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+            if (order) {
+                if (isSuccess && order.status !== "Paid") {
+                    order.status = "Paid";
+                    order.clientTxnId = txnIdToQuery;
+                    await order.save();
+                    if (order.user) {
+                        await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+                    }
+                }
+                else if (!isSuccess && (status === "EXPIRED" || status === "FAILED" || status === "0300" || status === "0200")) {
+                    // Restore stock and delete unpaid order
+                    for (const item of order.orderItems) {
+                        await Product_model_1.default.findByIdAndUpdate(item.productId, {
+                            $inc: { stockQuantity: item.qty }
+                        });
+                    }
+                    await Order_model_1.default.findByIdAndDelete(order._id);
                 }
             }
         }

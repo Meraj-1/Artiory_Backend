@@ -26,7 +26,7 @@ const getCustomersList = async (req, res) => {
         const users = await User_model_1.default.find({ roles: { $in: ["user"] } });
         // Fetch all orders and addresses
         const [orders, addresses] = await Promise.all([
-            Order_model_1.default.find().sort({ createdAt: -1 }),
+            Order_model_1.default.find({ status: { $in: ["Paid", "Shipped", "Delivered", "In-Transit"] } }).sort({ createdAt: -1 }),
             db.collection("addresses").find().toArray()
         ]);
         const data = users.map((u, idx) => {
