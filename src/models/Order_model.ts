@@ -24,7 +24,7 @@ export interface IShippingAddress {
 }
 
 export interface IOrder extends Document {
-  user: mongoose.Schema.Types.ObjectId;
+  user?: mongoose.Schema.Types.ObjectId;
   orderItems: IOrderItem[];
   totalPrice: number;
   discountAmount?: number;
@@ -48,7 +48,7 @@ const orderSchema = new mongoose.Schema<IOrder>(
   {
     user: {
       type: mongoose.Schema.Types.ObjectId,
-      required: true,
+      required: false,
       ref: "User"
     },
     orderItems: [

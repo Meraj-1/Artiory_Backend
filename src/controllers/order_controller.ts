@@ -44,15 +44,40 @@ export const createOrder = async (
       });
     }
 
-    // 3. Save order document
+    // 3. Resolve user (authenticated or guest)
+    let userId = req.user?._id as any;
+    if (!userId && (shippingAddress?.email || shippingAddress?.phone)) {
+      try {
+        const userEmail = shippingAddress?.email?.trim() || `guest_${(shippingAddress?.phone || Date.now()).toString().slice(-6)}@artiory.com`;
+        let guestUser = await User.findOne({ email: userEmail });
+        if (!guestUser && shippingAddress?.phone) {
+          guestUser = await User.findOne({ number: shippingAddress.phone.toString().slice(-10) });
+        }
+        if (!guestUser) {
+          guestUser = await User.create({
+            name: shippingAddress?.name?.trim() || "Guest Customer",
+            email: userEmail,
+            number: (shippingAddress?.phone || "").toString().slice(-10),
+            roles: ["user"]
+          });
+        }
+        userId = guestUser._id;
+      } catch (userCreateErr) {
+        console.warn("Guest user auto-creation notice:", userCreateErr);
+      }
+    }
+
+    // 4. Save order document
     const order = new Order({
-      user: req.user?._id as any,
+      user: userId || undefined,
       orderItems,
       totalPrice,
       shippingAddress,
       discountAmount,
       shippingCharge,
       couponCode,
+      status: "Pending",
+      shipmentStatus: "Unshipped"
     });
 
     const createdOrder = await order.save();
@@ -60,7 +85,7 @@ export const createOrder = async (
     res.status(201).json(createdOrder);
   } catch (error) {
     console.error("Create Order Error:", error);
-    res.status(500).json({ message: "Server Error" });
+    res.status(500).json({ message: "Server Error", error: (error as any)?.message });
   }
 };
 
