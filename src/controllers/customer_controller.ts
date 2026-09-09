@@ -33,7 +33,7 @@ export const getCustomersList = async (req: Request, res: Response): Promise<voi
     ]);
 
     const data = users.map((u, idx) => {
-      const userOrders = orders.filter(o => o.user.toString() === u._id.toString());
+      const userOrders = orders.filter(o => o.user?.toString() === u._id.toString());
       const spent = userOrders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
       
       const lastOrderObj = userOrders[0];

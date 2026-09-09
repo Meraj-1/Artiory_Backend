@@ -30,7 +30,7 @@ const getCustomersList = async (req, res) => {
             db.collection("addresses").find().toArray()
         ]);
         const data = users.map((u, idx) => {
-            const userOrders = orders.filter(o => o.user.toString() === u._id.toString());
+            const userOrders = orders.filter(o => o.user?.toString() === u._id.toString());
             const spent = userOrders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
             const lastOrderObj = userOrders[0];
             const lastOrder = lastOrderObj ? formatLastOrder(lastOrderObj.createdAt) : "—";
