@@ -163,6 +163,24 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
 
     const activeCallbackUrl = `${activeFrontendUrl}/api/payment/sabpaisa/callback`;
 
+    // Direct Payment Bypass for Testing Mode
+    const isPaymentBypass = process.env.PAYMENT_BYPASS === "true" || req.body?.bypass === true;
+    if (isPaymentBypass) {
+      order.status = "Paid";
+      order.shipmentStatus = "Unshipped";
+      order.sabpaisaTxnId = `BYPASS-${Date.now().toString().slice(-6)}`;
+      await order.save();
+      if (order.user) {
+        await User.findByIdAndUpdate(order.user, { $set: { cart: [] } }).catch(() => {});
+      }
+      return res.status(200).json({
+        success: true,
+        isBypass: true,
+        checkoutUrl: `${activeFrontendUrl}/profile?tab=orders&highlight=${order._id}`,
+        message: "Payment Bypassed for Testing - Order Successfully Created and Marked Paid!"
+      });
+    }
+
     // Build query string dynamically (only include transUserName/Password if provided, maintaining exact order sequence)
     let queryString = `payerName=${payerName}` +
       `&payerEmail=${payerEmail}` +
