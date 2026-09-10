@@ -5,13 +5,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const dotenv_1 = __importDefault(require("dotenv"));
-const fs_1 = __importDefault(require("fs"));
-const path_1 = __importDefault(require("path"));
-// Load .env.local first if present for local testing, otherwise fallback to .env
-const envLocalPath = path_1.default.resolve(process.cwd(), ".env.local");
-if (fs_1.default.existsSync(envLocalPath)) {
-    dotenv_1.default.config({ path: envLocalPath });
-}
 dotenv_1.default.config();
 const auth_routes_1 = __importDefault(require("./routes/auth.routes"));
 const user_routes_1 = __importDefault(require("./routes/user.routes"));

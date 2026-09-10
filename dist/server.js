@@ -4,12 +4,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const dotenv_1 = __importDefault(require("dotenv"));
-const fs_1 = __importDefault(require("fs"));
-const path_1 = __importDefault(require("path"));
-const envLocalPath = path_1.default.resolve(process.cwd(), ".env.local");
-if (fs_1.default.existsSync(envLocalPath)) {
-    dotenv_1.default.config({ path: envLocalPath });
-}
 dotenv_1.default.config();
 const app_1 = __importDefault(require("./app"));
 const db_1 = __importDefault(require("./config/db"));

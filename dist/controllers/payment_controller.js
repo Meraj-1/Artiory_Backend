@@ -187,20 +187,66 @@ const initiateSabPaisaPayment = async (req, res) => {
         }
         queryString += `&callbackUrl=${activeCallbackUrl}&channelId=W`;
         console.log("SabPaisa Classic Query String:", queryString);
-        let encData = "";
+        // Try SabPaisa PG 3.0 Live REST API (Returns instant checkoutUrl)
         try {
-            encData = encrypt(queryString, currentAuthKey, currentAuthIv);
+            const pg3BaseUrl = (process.env.SABPAISA_MERCHANT_API_URL || "https://merchant-api.sabpaisa.in").trim();
+            const pg3Endpoint = `${pg3BaseUrl}/api/v2/payments`;
+            const timestampVal = Math.floor(Date.now() / 1000);
+            const amountInPaise = Math.round(order.totalPrice * 100);
+            // Checksum format: merchantId|merchantTxnId|amount|currency|timestamp
+            const checksumString = `${currentClientCode}|${clientTxnId}|${amountInPaise}|INR|${timestampVal}`;
+            const checksum = crypto_1.default
+                .createHmac("sha256", currentAuthIv)
+                .update(checksumString)
+                .digest("hex");
+            const pg3Payload = {
+                merchantId: currentClientCode,
+                merchantTxnId: clientTxnId,
+                amount: amountInPaise,
+                currency: "INR",
+                customerName: payerName,
+                customerEmail: payerEmail,
+                customerPhone: payerMobile,
+                returnUrl: activeCallbackUrl,
+                checksum: checksum,
+                timestamp: timestampVal
+            };
+            console.log("Attempting SabPaisa PG 3.0 Live on URL:", pg3Endpoint);
+            console.log("PG 3.0 Return/Callback URL:", activeCallbackUrl);
+            const pg3Response = await pg3Request(pg3Endpoint, currentAuthKey, pg3Payload);
+            console.log("SabPaisa PG 3.0 Response:", JSON.stringify(pg3Response));
+            const checkoutUrl = pg3Response?.checkoutUrl ||
+                pg3Response?.paymentUrl ||
+                pg3Response?.payment_url ||
+                pg3Response?.data?.checkoutUrl ||
+                pg3Response?.data?.paymentUrl ||
+                pg3Response?.data?.payment_url;
+            const clientSecret = pg3Response?.clientSecret || pg3Response?.data?.clientSecret;
+            if (checkoutUrl) {
+                const finalUrl = clientSecret && !checkoutUrl.includes("clientSecret")
+                    ? `${checkoutUrl}${checkoutUrl.includes("?") ? "&" : "?"}clientSecret=${clientSecret}`
+                    : checkoutUrl;
+                return res.status(200).json({
+                    success: true,
+                    checkoutUrl: finalUrl
+                });
+            }
+            else {
+                console.error("SabPaisa PG 3.0 did not return checkoutUrl:", pg3Response);
+                return res.status(400).json({
+                    success: false,
+                    message: pg3Response?.errorMessage || pg3Response?.message || "Failed to initialize payment gateway",
+                    details: pg3Response
+                });
+            }
         }
-        catch (encErr) {
-            console.error("SabPaisa Encryption Error:", encErr);
-            return res.status(500).json({ success: false, message: "Failed to encrypt payment data" });
+        catch (pg3Error) {
+            console.error("SabPaisa PG 3.0 Initiation error:", pg3Error);
+            return res.status(500).json({
+                success: false,
+                message: pg3Error.message || "Failed to communicate with SabPaisa payment gateway"
+            });
         }
-        return res.status(200).json({
-            success: true,
-            encData,
-            clientCode: currentClientCode,
-            sabpaisaUrl: currentInitUrl
-        });
     }
     catch (err) {
         console.error("Initiate Payment Error:", err);
