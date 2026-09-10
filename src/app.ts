@@ -1,8 +1,14 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 
-// Load environment variables as early as possible so config modules can use them
+// Load .env.local first if present for local testing, otherwise fallback to .env
+const envLocalPath = path.resolve(process.cwd(), ".env.local");
+if (fs.existsSync(envLocalPath)) {
+  dotenv.config({ path: envLocalPath });
+}
 dotenv.config();
 
 import authRoutes from "./routes/auth.routes";

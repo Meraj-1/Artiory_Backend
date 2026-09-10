@@ -40,6 +40,7 @@ export interface IOrder extends Document {
   clientTxnId?: string;
   sabpaisaTxnId?: string;
   returnUrl?: string;
+  isGuest?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -120,6 +121,10 @@ const orderSchema = new mongoose.Schema<IOrder>(
     },
     returnUrl: {
       type: String
+    },
+    isGuest: {
+      type: Boolean,
+      default: false
     }
   },
   {

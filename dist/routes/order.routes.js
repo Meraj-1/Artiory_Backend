@@ -7,7 +7,7 @@ const router = (0, express_1.Router)();
 router.post("/", auth_middleware_1.protectOptional, order_controller_1.createOrder);
 router.post("/track", auth_middleware_1.protectOptional, order_controller_1.trackOrder);
 router.get("/", auth_middleware_1.protect, order_controller_1.getAllOrders);
-router.post("/reconcile", auth_middleware_1.protect, order_controller_1.reconcileOrder);
+router.post("/reconcile", auth_middleware_1.protectOptional, order_controller_1.reconcileOrder);
 router.get("/myorders", auth_middleware_1.protect, order_controller_1.getMyOrders);
 router.get("/:id", auth_middleware_1.protectOptional, order_controller_1.getOrderById);
 exports.default = router;

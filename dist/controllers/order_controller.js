@@ -8,30 +8,29 @@ const mongoose_1 = __importDefault(require("mongoose"));
 const Order_model_1 = __importDefault(require("../models/Order_model"));
 const Product_model_1 = __importDefault(require("../models/Product_model"));
 const User_model_1 = __importDefault(require("../models/User_model"));
+const logistics_controller_1 = require("./logistics_controller");
 const createOrder = async (req, res) => {
     try {
         const { orderItems, totalPrice, shippingAddress, discountAmount = 0, shippingCharge = 0, couponCode = "", } = req.body;
         if (!orderItems || orderItems.length === 0) {
             return res.status(400).json({ message: "No order items" });
         }
-        // 1. Atomic stock validation for all ordered products
+        // 1. Atomic stock validation & decrement for ordered products
         for (const item of orderItems) {
-            const product = await Product_model_1.default.findById(item.productId);
-            if (!product) {
-                return res.status(404).json({ message: `Product "${item.name}" not found` });
+            if (item.productId && mongoose_1.default.Types.ObjectId.isValid(item.productId)) {
+                const product = await Product_model_1.default.findById(item.productId);
+                if (product) {
+                    const currentStock = product.stockQuantity ?? 0;
+                    if (item.qty > currentStock && currentStock > 0) {
+                        return res.status(400).json({
+                            message: `Insufficient stock for product "${product.productName}". Only ${currentStock} items left in stock!`
+                        });
+                    }
+                    await Product_model_1.default.findByIdAndUpdate(item.productId, {
+                        $inc: { stockQuantity: -item.qty }
+                    });
+                }
             }
-            const currentStock = product.stockQuantity ?? 0;
-            if (item.qty > currentStock) {
-                return res.status(400).json({
-                    message: `Insufficient stock for product "${product.productName}". Only ${currentStock} items left in stock!`
-                });
-            }
-        }
-        // 2. Decrement stock counts in the database
-        for (const item of orderItems) {
-            await Product_model_1.default.findByIdAndUpdate(item.productId, {
-                $inc: { stockQuantity: -item.qty }
-            });
         }
         // 3. Resolve user (authenticated or guest)
         let userId = req.user?._id;
@@ -57,6 +56,7 @@ const createOrder = async (req, res) => {
             }
         }
         // 4. Save order document
+        const isGuestOrder = !req.user?._id || req.body?.isGuest === true;
         const order = new Order_model_1.default({
             user: userId || undefined,
             orderItems,
@@ -66,7 +66,8 @@ const createOrder = async (req, res) => {
             shippingCharge,
             couponCode,
             status: "Pending",
-            shipmentStatus: "Unshipped"
+            shipmentStatus: "Unshipped",
+            isGuest: isGuestOrder
         });
         const createdOrder = await order.save();
         res.status(201).json(createdOrder);
@@ -127,21 +128,39 @@ const getOrderById = async (req, res) => {
     try {
         const rawParam = req.params.id;
         const rawId = Array.isArray(rawParam) ? rawParam[0] : rawParam;
-        const cleanId = typeof rawId === "string" ? rawId.trim().replace(/^#?ORD-?/i, "") : "";
+        const cleanId = typeof rawId === "string" ? rawId.trim().replace(/^#?\s*(ORD|ORDER)?[-_:\s]*/i, "") : "";
         let order = null;
         if (mongoose_1.default.Types.ObjectId.isValid(cleanId) && cleanId.length === 24) {
             order = await Order_model_1.default.findById(cleanId)
                 .populate("user", "name email profileImage")
                 .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight");
         }
-        else {
-            order = await Order_model_1.default.findOne({
-                $or: [
-                    { clientTxnId: cleanId },
-                    { awbNumber: cleanId },
-                    { logisticsOrderId: cleanId }
-                ]
-            })
+        if (!order) {
+            const lookupConditions = [
+                { clientTxnId: cleanId },
+                { clientTxnId: rawId },
+                { awbNumber: cleanId },
+                { awbNumber: rawId },
+                { logisticsOrderId: cleanId },
+                { logisticsOrderId: rawId },
+                { logisticsOrderId: `#${cleanId}` },
+                { sabpaisaTxnId: cleanId },
+            ];
+            if (/^\d+$/.test(cleanId)) {
+                lookupConditions.push({ logisticsOrderId: Number(cleanId) });
+            }
+            if (cleanId.length >= 4 && /^[0-9a-fA-F]+$/.test(cleanId)) {
+                lookupConditions.push({
+                    $expr: {
+                        $regexMatch: {
+                            input: { $toString: "$_id" },
+                            regex: cleanId + "$",
+                            options: "i",
+                        },
+                    },
+                });
+            }
+            order = await Order_model_1.default.findOne({ $or: lookupConditions })
                 .populate("user", "name email profileImage")
                 .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight");
         }
@@ -242,6 +261,8 @@ const reconcileOrder = async (req, res) => {
             if (order.user) {
                 await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
             }
+            // Auto-trigger iThink Logistics shipment booking & notifications immediately
+            (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
             return res.status(200).json({ success: true, message: "Order successfully marked as Paid!", status: order.status });
         }
         const txnToQuery = clientTxnId || order.clientTxnId || order._id.toString();
@@ -253,6 +274,8 @@ const reconcileOrder = async (req, res) => {
             if (order.user) {
                 await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
             }
+            // Auto-trigger iThink Logistics shipment booking & notifications immediately
+            (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
             return res.status(200).json({ success: true, message: "Order reconciled successfully with SabPaisa! Status set to Paid.", status: order.status });
         }
         else {
@@ -276,39 +299,54 @@ const trackOrder = async (req, res) => {
             return res.status(400).json({ success: false, message: "Order ID, Phone Number, or Email is required" });
         }
         const rawQuery = query.trim();
-        const cleanId = rawQuery.replace(/^#?ORD-?/i, "");
-        let filter = {};
+        const cleanId = rawQuery.replace(/^#?\s*(ORD|ORDER)?[-_:\s]*/i, "").trim();
+        const digitsOnly = rawQuery.replace(/\D/g, "");
+        const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawQuery);
+        const orConditions = [];
+        // 1. Direct MongoDB 24-character ObjectId
         if (mongoose_1.default.Types.ObjectId.isValid(cleanId) && cleanId.length === 24) {
-            filter = { _id: cleanId };
+            orConditions.push({ _id: new mongoose_1.default.Types.ObjectId(cleanId) });
         }
-        else {
-            const digitsOnly = rawQuery.replace(/\D/g, "");
-            const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawQuery);
-            if (digitsOnly.length >= 10) {
-                const phone10 = digitsOnly.slice(-10);
-                filter = {
-                    $or: [
-                        { "shippingAddress.phone": phone10 },
-                        { "shippingAddress.phone": `+91${phone10}` },
-                        { "shippingAddress.phone": `91${phone10}` },
-                        { "shippingAddress.alternatePhone": phone10 }
-                    ]
-                };
-            }
-            else if (isEmail) {
-                filter = { "shippingAddress.email": new RegExp(`^${rawQuery.toLowerCase()}$`, "i") };
-            }
-            else {
-                filter = {
-                    $or: [
-                        { clientTxnId: cleanId },
-                        { awbNumber: cleanId },
-                        { logisticsOrderId: cleanId }
-                    ]
-                };
-            }
+        // 2. Short ID suffix of MongoDB ObjectId (e.g. 506E4938 or 6e4938)
+        if (cleanId.length >= 4 && /^[0-9a-fA-F]+$/.test(cleanId)) {
+            orConditions.push({
+                $expr: {
+                    $regexMatch: {
+                        input: { $toString: "$_id" },
+                        regex: cleanId + "$",
+                        options: "i",
+                    },
+                },
+            });
         }
-        const orders = await Order_model_1.default.find(filter)
+        // 3. iThink Logistics Order ID (as sent in SMS e.g. #35468 or 35468)
+        orConditions.push({ logisticsOrderId: cleanId });
+        orConditions.push({ logisticsOrderId: rawQuery });
+        orConditions.push({ logisticsOrderId: `#${cleanId}` });
+        if (/^\d+$/.test(cleanId)) {
+            orConditions.push({ logisticsOrderId: Number(cleanId) });
+        }
+        // 4. AWB Tracking Number
+        orConditions.push({ awbNumber: cleanId });
+        orConditions.push({ awbNumber: rawQuery });
+        // 5. Client Transaction ID & SabPaisa Txn ID
+        orConditions.push({ clientTxnId: cleanId });
+        orConditions.push({ clientTxnId: rawQuery });
+        orConditions.push({ sabpaisaTxnId: cleanId });
+        orConditions.push({ sabpaisaTxnId: rawQuery });
+        // 6. Mobile Number search (10-digit)
+        if (digitsOnly.length >= 10) {
+            const phone10 = digitsOnly.slice(-10);
+            orConditions.push({ "shippingAddress.phone": phone10 });
+            orConditions.push({ "shippingAddress.phone": `+91${phone10}` });
+            orConditions.push({ "shippingAddress.phone": `91${phone10}` });
+            orConditions.push({ "shippingAddress.alternatePhone": phone10 });
+        }
+        // 7. Email Address search
+        if (isEmail || rawQuery.includes("@")) {
+            orConditions.push({ "shippingAddress.email": new RegExp(`^${rawQuery.toLowerCase()}$`, "i") });
+        }
+        const orders = await Order_model_1.default.find({ $or: orConditions })
             .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
             .sort({ createdAt: -1 })
             .limit(10);

@@ -375,6 +375,240 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
   }
 };
 
+/**
+ * Programmatic helper to auto-book shipment with iThink Logistics
+ * Called automatically as soon as an order is Paid / Reconciled
+ */
+export const bookShipmentForOrder = async (
+  orderId: string | mongoose.Types.ObjectId,
+  dimensions?: { weight?: number; length?: number; width?: number; height?: number }
+): Promise<any> => {
+  try {
+    if (!ITHINK_ACCESS_TOKEN || !ITHINK_SECRET_KEY) {
+      console.warn("Auto-shipment skipped: iThink credentials not configured");
+      return { success: false, message: "Credentials not configured" };
+    }
+
+    const order = await Order.findById(orderId).populate("user");
+    if (!order) {
+      return { success: false, message: "Order not found" };
+    }
+
+    if (order.shipmentStatus === "Shipped" && order.awbNumber) {
+      return { success: true, awbNumber: order.awbNumber, courierName: order.courierName };
+    }
+
+    const user = order.user as any;
+
+    let rawName = order.shippingAddress?.name || user?.name || "Valued Customer";
+    let customerName = rawName.replace(/[^a-zA-Z0-9 ]/g, "").trim();
+    if (customerName.length < 3) customerName = "Valued Customer";
+
+    const customerEmail = order.shippingAddress?.email || user?.email || "customer@artiory.com";
+
+    let rawPhone = order.shippingAddress?.phone || user?.number || "9999999999";
+    let phoneDigits = rawPhone.toString().replace(/\D/g, "");
+    let customerPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : "9999999999";
+
+    const db = mongoose.connection.db;
+    let flatAndBuilding = order.shippingAddress?.home || "";
+    let streetAndColony = order.shippingAddress?.street || order.shippingAddress?.address || "";
+    let landmark = order.shippingAddress?.landmark || "";
+
+    let addressLine1 = [flatAndBuilding, streetAndColony].filter(Boolean).join(", ").trim();
+    let addressLine2 = landmark.trim();
+
+    if (!addressLine1 || addressLine1.length < 5) {
+      if (db) {
+        const addressDoc = await db.collection("addresses").findOne({ userId: order.user });
+        if (addressDoc) {
+          flatAndBuilding = addressDoc.home || "";
+          streetAndColony = addressDoc.street || addressDoc.address || "";
+          landmark = addressDoc.landmark || "";
+          addressLine1 = [flatAndBuilding, streetAndColony].filter(Boolean).join(", ").trim();
+          addressLine2 = landmark.trim();
+        }
+      }
+    }
+
+    if (!addressLine1 || addressLine1.length < 5) {
+      addressLine1 = (order.shippingAddress?.address || `${customerName}, Main Delivery Road`).trim();
+    }
+
+    let rawPin = order.shippingAddress?.postalCode || "";
+    let pinDigits = rawPin.toString().replace(/\D/g, "").slice(0, 6);
+    let shippingPin = pinDigits.length === 6 ? Number(pinDigits) : 400077;
+
+    if (shippingPin === 400077 && db) {
+      const addressDoc = await db.collection("addresses").findOne({ userId: order.user });
+      if (addressDoc?.postalCode) {
+        const pd = addressDoc.postalCode.toString().replace(/\D/g, "").slice(0, 6);
+        if (pd.length === 6) shippingPin = Number(pd);
+      }
+    }
+
+    let customerCity = order.shippingAddress?.city || "Mumbai";
+    let customerState = order.shippingAddress?.state || "Maharashtra";
+    let customerCountry = order.shippingAddress?.country || "India";
+
+    if ((!order.shippingAddress?.city || !order.shippingAddress?.state) && db) {
+      const addressDoc = await db.collection("addresses").findOne({ userId: order.user });
+      if (addressDoc) {
+        if (addressDoc.city) customerCity = addressDoc.city;
+        if (addressDoc.state) customerState = addressDoc.state;
+      }
+    }
+
+    let totalWeightGrams = 0;
+    let maxLength = 0;
+    let maxWidth = 0;
+    let totalHeight = 0;
+
+    for (const item of order.orderItems) {
+      const product = await Product.findById(item.productId);
+      if (product) {
+        const qty = Number(item.qty || 1);
+        const rawWeight = Number(product.weight || (product as any).weightGrams || 150);
+        const itemWeightGrams = rawWeight > 5 ? rawWeight : (rawWeight * 1000);
+        totalWeightGrams += itemWeightGrams * qty;
+
+        const pLength = Number(product.dimensions?.length || 15);
+        const pWidth = Number(product.dimensions?.width || 12);
+        const pHeight = Number(product.dimensions?.height || 4);
+
+        maxLength = Math.max(maxLength, pLength);
+        maxWidth = Math.max(maxWidth, pWidth);
+        totalHeight += pHeight * qty;
+      }
+    }
+
+    if (totalWeightGrams <= 0) totalWeightGrams = 200;
+    if (maxLength <= 0) maxLength = 15;
+    if (maxWidth <= 0) maxWidth = 12;
+    if (totalHeight <= 0) totalHeight = 5;
+
+    const weightInKgFromGrams = Math.round((totalWeightGrams / 1000) * 1000) / 1000;
+    const finalShipmentLength = Number(dimensions?.length) || maxLength;
+    const finalShipmentWidth = Number(dimensions?.width) || maxWidth;
+    const finalShipmentHeight = Number(dimensions?.height) || totalHeight;
+    const finalShipmentWeight = Number(dimensions?.weight) || weightInKgFromGrams;
+
+    const formattedDate = formatDateTime(new Date());
+    const paymentMode = order.status === "Paid" ? "Prepaid" : "COD";
+    const pickupAddressId = String(ITHINK_PICKUP_ADDRESS_ID || "122518");
+    const returnAddressId = String(process.env.ITHINK_RETURN_ADDRESS_ID || ITHINK_PICKUP_ADDRESS_ID || "122518");
+    const storeIdNum = Number(ITHINK_STORE_ID || 32474);
+    const orderIdStr = order._id.toString();
+
+    const payload = {
+      data: {
+        access_token: ITHINK_ACCESS_TOKEN,
+        secret_key: ITHINK_SECRET_KEY,
+        store_id: storeIdNum,
+        platform_id: storeIdNum,
+        pickup_address_id: pickupAddressId,
+        return_address_id: returnAddressId,
+        shipment_service_type: "surface",
+        service_type: "surface",
+        shipments: [
+          {
+            order: orderIdStr,
+            sub_order: orderIdStr,
+            order_date: formattedDate,
+            total_amount: Number(order.totalPrice || 0),
+            name: customerName,
+            company_name: "Artiory",
+            add: addressLine1,
+            add2: addressLine2,
+            pin: shippingPin,
+            city: customerCity,
+            state: customerState,
+            country: customerCountry,
+            phone: customerPhone,
+            alt_phone: (order.shippingAddress?.alternatePhone || "").replace(/\D/g, "").slice(-10),
+            email: customerEmail,
+            is_billing_same_as_shipping: "yes",
+            billing_name: customerName,
+            billing_company_name: "Artiory",
+            billing_add: addressLine1,
+            billing_add2: addressLine2,
+            billing_pin: shippingPin,
+            billing_city: customerCity,
+            billing_state: customerState,
+            billing_country: customerCountry,
+            billing_phone: customerPhone,
+            billing_alt_phone: (order.shippingAddress?.alternatePhone || "").replace(/\D/g, "").slice(-10),
+            billing_email: customerEmail,
+            products: order.orderItems.map((item) => ({
+              product_name: item.name,
+              product_quantity: item.qty.toString(),
+              product_price: Number(item.price || 0),
+              product_sku: item.productId.toString().slice(-8),
+              product_tax_rate: "0",
+              product_discount: "0",
+              product_hsn_code: "6204"
+            })),
+            shipment_length: Number(finalShipmentLength),
+            shipment_width: Number(finalShipmentWidth),
+            shipment_height: Number(finalShipmentHeight),
+            weight: Number(finalShipmentWeight),
+            shipping_charges: Number(order.shippingCharge !== undefined && order.shippingCharge !== null ? order.shippingCharge : 0),
+            giftwrap_charges: 0,
+            transaction_charges: 0,
+            total_discount: Number(order.discountAmount || 0),
+            first_attemp_discount: 0,
+            cod_amount: paymentMode === "COD" ? Number(order.totalPrice || 0) : 0,
+            cod_charges: 0,
+            eway_bill_number: "",
+            gst_number: "",
+            payment_mode: paymentMode,
+            return_address_id: returnAddressId,
+            pickup_address_id: pickupAddressId,
+            order_type: "forward",
+            shipment_service_type: "surface",
+            service_type: "surface",
+            shipping_service_type: "surface",
+            reseller_name: "Artiory",
+            send_sms_notification: "yes",
+            send_email_notification: "yes",
+            tracking_notification: "yes"
+          }
+        ]
+      }
+    };
+
+    console.log("iThink Auto-Book Payload:", JSON.stringify(payload));
+    const apiResponse = await postToiThink("order/sync.json", payload);
+    console.log("iThink Auto-Book Response:", JSON.stringify(apiResponse));
+
+    if (apiResponse && apiResponse.status_code === 200 && apiResponse.data) {
+      const keys = Object.keys(apiResponse.data);
+      const firstShipmentKey = keys[0];
+      const shipmentResult = firstShipmentKey ? apiResponse.data[firstShipmentKey] : null;
+
+      if (shipmentResult && (shipmentResult.status === "success" || shipmentResult.status === "Success")) {
+        const awbNumber = shipmentResult.awb_number || shipmentResult.refnum;
+        const courierName = shipmentResult.courier_name || "iThink Logistics Partner";
+        const logisticsOrderId = shipmentResult.order_id || "N/A";
+
+        order.awbNumber = awbNumber;
+        order.courierName = courierName;
+        order.logisticsOrderId = logisticsOrderId;
+        order.shipmentStatus = "Shipped";
+        order.status = "Shipped";
+        await order.save();
+
+        console.log(`Auto-shipped Order ${order._id} with AWB ${awbNumber}`);
+        return { success: true, awbNumber, courierName };
+      }
+    }
+    return { success: false, message: "Auto-ship booking response failed" };
+  } catch (err: any) {
+    console.error("Auto-ship error:", err);
+    return { success: false, message: err?.message };
+  }
+};
+
 export const ITHINK_STATUS_CODES: Record<string, { code: string; category: string; description: string }> = {
   "Manifested": { code: "UD", category: "Manifested", description: "Forward shipment data pushed using API or System" },
   "Not Picked": { code: "UD", category: "Manifested", description: "Forward shipment not picked up for long period" },

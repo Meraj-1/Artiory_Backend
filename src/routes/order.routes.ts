@@ -14,7 +14,7 @@ const router = Router();
 router.post("/", protectOptional, createOrder);
 router.post("/track", protectOptional, trackOrder);
 router.get("/", protect, getAllOrders);
-router.post("/reconcile", protect, reconcileOrder);
+router.post("/reconcile", protectOptional, reconcileOrder);
 router.get("/myorders", protect, getMyOrders);
 router.get("/:id", protectOptional, getOrderById);
 

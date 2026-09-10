@@ -9,6 +9,7 @@ const https_1 = __importDefault(require("https"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const Order_model_1 = __importDefault(require("../models/Order_model"));
 const User_model_1 = __importDefault(require("../models/User_model"));
+const logistics_controller_1 = require("./logistics_controller");
 /**
  * Helper to perform secure HTTPS POST requests to SabPaisa PG 3.0 REST API
  */
@@ -158,6 +159,8 @@ const initiateSabPaisaPayment = async (req, res) => {
             if (order.user) {
                 await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } }).catch(() => { });
             }
+            // Auto-trigger iThink Logistics shipment booking & notifications immediately
+            (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
             return res.status(200).json({
                 success: true,
                 isBypass: true,
@@ -165,13 +168,17 @@ const initiateSabPaisaPayment = async (req, res) => {
                 message: "Payment Bypassed for Testing - Order Successfully Created and Marked Paid!"
             });
         }
+        const currentClientCode = (process.env.SABPAISA_CLIENT_CODE || "ATHE1").trim();
+        const currentAuthKey = (process.env.SABPAISA_AUTH_KEY || process.env.SABPAISA_API_KEY || "sp_g7V8rvizRkWzCulNkEk4sY09NezsEeBHdRNoZFZEeJ").trim();
+        const currentAuthIv = (process.env.SABPAISA_AUTH_IV || process.env.SABPAISA_SECRET_KEY || "sec_cJqMwPVmixjzTWC6HWafkirNofzbIvRsXGBE9ASFFY").trim();
+        const currentInitUrl = (process.env.SABPAISA_INIT_URL || "https://stage-securepay.sabpaisa.in/SabPaisa/sabPaisaInit?v=1").trim();
         // Build query string dynamically (only include transUserName/Password if provided, maintaining exact order sequence)
         let queryString = `payerName=${payerName}` +
             `&payerEmail=${payerEmail}` +
             `&payerMobile=${payerMobile}` +
             `&clientTxnId=${clientTxnId}` +
             `&amount=${order.totalPrice.toFixed(2)}` +
-            `&clientCode=${SABPAISA_CLIENT_CODE}`;
+            `&clientCode=${currentClientCode}`;
         if (cleanUsername) {
             queryString += `&transUserName=${cleanUsername}`;
         }
@@ -180,68 +187,9 @@ const initiateSabPaisaPayment = async (req, res) => {
         }
         queryString += `&callbackUrl=${activeCallbackUrl}&channelId=W`;
         console.log("SabPaisa Classic Query String:", queryString);
-        // Try SabPaisa Live PG 3.0 API
-        try {
-            const configuredBase = process.env.SABPAISA_MERCHANT_API_URL || "https://merchant-api.sabpaisa.in";
-            const endpointsToTry = [
-                "https://merchant-api.sabpaisa.in/api/v2/payments",
-                `${configuredBase}/api/v2/payments`,
-                "https://staging-sb-merchant-api.sabpaisa.in/api/v2/payments"
-            ];
-            // Deduplicate
-            const uniqueEndpoints = Array.from(new Set(endpointsToTry));
-            const timestampVal = Math.floor(Date.now() / 1000);
-            const amountInPaise = Math.round(order.totalPrice * 100);
-            const checksumString = `${SABPAISA_CLIENT_CODE}|${clientTxnId}|${amountInPaise}|INR|${timestampVal}`;
-            const checksum = crypto_1.default
-                .createHmac("sha256", SABPAISA_AUTH_IV)
-                .update(checksumString)
-                .digest("hex");
-            const pg3Payload = {
-                merchantId: SABPAISA_CLIENT_CODE,
-                merchantTxnId: clientTxnId,
-                amount: amountInPaise,
-                currency: "INR",
-                customerName: payerName,
-                customerEmail: payerEmail,
-                customerPhone: payerMobile,
-                returnUrl: activeCallbackUrl,
-                checksum: checksum,
-                timestamp: timestampVal
-            };
-            for (const endpoint of uniqueEndpoints) {
-                try {
-                    console.log("Attempting SabPaisa PG 3.0 on URL:", endpoint);
-                    const pg3Response = await pg3Request(endpoint, SABPAISA_AUTH_KEY, pg3Payload);
-                    console.log("SabPaisa PG 3.0 Response from", endpoint, ":", JSON.stringify(pg3Response));
-                    const checkoutUrl = pg3Response?.checkoutUrl ||
-                        pg3Response?.paymentUrl ||
-                        pg3Response?.payment_url ||
-                        pg3Response?.data?.checkoutUrl ||
-                        pg3Response?.data?.paymentUrl ||
-                        pg3Response?.data?.payment_url;
-                    const clientSecret = pg3Response?.clientSecret || pg3Response?.data?.clientSecret;
-                    if (checkoutUrl) {
-                        const finalUrl = clientSecret && !checkoutUrl.includes("clientSecret")
-                            ? `${checkoutUrl}${checkoutUrl.includes("?") ? "&" : "?"}clientSecret=${clientSecret}`
-                            : checkoutUrl;
-                        return res.status(200).json({
-                            success: true,
-                            checkoutUrl: finalUrl
-                        });
-                    }
-                }
-                catch (subErr) {
-                    console.warn("Endpoint failed:", endpoint, subErr?.message);
-                }
-            }
-        }
-        catch (pg3Error) {
-            console.error("SabPaisa PG 3.0 Initiation failed. Falling back to Classic AES:", pg3Error);
-        }
         let encData = "";
         try {
-            encData = encrypt(queryString, SABPAISA_AUTH_KEY, SABPAISA_AUTH_IV);
+            encData = encrypt(queryString, currentAuthKey, currentAuthIv);
         }
         catch (encErr) {
             console.error("SabPaisa Encryption Error:", encErr);
@@ -250,8 +198,8 @@ const initiateSabPaisaPayment = async (req, res) => {
         return res.status(200).json({
             success: true,
             encData,
-            clientCode: SABPAISA_CLIENT_CODE,
-            sabpaisaUrl: SABPAISA_INIT_URL
+            clientCode: currentClientCode,
+            sabpaisaUrl: currentInitUrl
         });
     }
     catch (err) {
@@ -271,15 +219,17 @@ const sabPaisaCallback = async (req, res) => {
         let sabpaisaTxnId = "N/A";
         let statusCode = "FAILED";
         let amount = "0.00";
+        const currentAuthKey = (process.env.SABPAISA_AUTH_KEY || process.env.SABPAISA_API_KEY || "sp_g7V8rvizRkWzCulNkEk4sY09NezsEeBHdRNoZFZEeJ").trim();
+        const currentAuthIv = (process.env.SABPAISA_AUTH_IV || process.env.SABPAISA_SECRET_KEY || "sec_cJqMwPVmixjzTWC6HWafkirNofzbIvRsXGBE9ASFFY").trim();
         if (encResponse) {
             // Classic Decryption Flow
             let decryptedText = "";
             try {
-                decryptedText = decrypt(encResponse, SABPAISA_AUTH_KEY, SABPAISA_AUTH_IV);
+                decryptedText = decrypt(encResponse, currentAuthKey, currentAuthIv);
             }
             catch (decErr) {
                 console.error("SabPaisa Decryption Error:", decErr);
-                return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=DecryptionFailed`);
+                return res.redirect(`${FRONTEND_URL}/checkout?error=DecryptionFailed`);
             }
             console.log("SabPaisa Decrypted Response (Classic):", decryptedText);
             // Parse the query string params
@@ -366,6 +316,8 @@ const sabPaisaCallback = async (req, res) => {
             }
             await order.save();
             console.log(`SabPaisa Callback Successful: Order ${order._id} status set to Paid (Txn: ${sabpaisaTxnId})`);
+            // Auto-trigger iThink Logistics shipment booking & notifications immediately
+            (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
         }
         else {
             // Mark as Failed — DO NOT delete the order so admin and user retain full records!
@@ -398,23 +350,28 @@ const sabPaisaCallback = async (req, res) => {
         else if (originHeader.includes("artiory.com") || originHeader.includes("3011") || process.env.NODE_ENV === "production") {
             activeFrontendUrl = "https://artiory.com";
         }
+        const isGuest = Boolean(order?.isGuest);
+        const successRedirectUrl = isGuest
+            ? `${activeFrontendUrl}/track-order?orderId=${order._id}&payment=success`
+            : `${activeFrontendUrl}/profile?tab=orders&highlight=${order._id}`;
         // Support JSON response when proxied by Next.js frontend route
         if (req.headers.accept?.includes("application/json") || req.headers["x-forwarded-by"] === "nextjs" || req.is("application/json")) {
             return res.status(200).json({
                 success: true,
                 isSuccess,
+                isGuest,
                 orderId: order._id.toString(),
                 clientTxnId,
                 sabpaisaTxnId,
                 status: order.status,
                 redirectUrl: isSuccess
-                    ? `${activeFrontendUrl}/profile?tab=orders&highlight=${order._id}`
+                    ? successRedirectUrl
                     : `${activeFrontendUrl}/checkout?error=PaymentFailed&orderId=${order._id}`
             });
         }
         // Direct browser redirect
         if (isSuccess) {
-            return res.redirect(`${activeFrontendUrl}/profile?tab=orders&highlight=${order._id}`);
+            return res.redirect(successRedirectUrl);
         }
         else {
             return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed&orderId=${order._id}`);

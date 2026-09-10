@@ -79,6 +79,10 @@ const orderSchema = new mongoose_1.default.Schema({
     },
     returnUrl: {
         type: String
+    },
+    isGuest: {
+        type: Boolean,
+        default: false
     }
 }, {
     timestamps: true

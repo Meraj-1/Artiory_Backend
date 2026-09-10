@@ -1,8 +1,15 @@
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
+
+const envLocalPath = path.resolve(process.cwd(), ".env.local");
+if (fs.existsSync(envLocalPath)) {
+  dotenv.config({ path: envLocalPath });
+}
+dotenv.config();
+
 import app from "./app";
 import connectDB from "./config/db";
-
-dotenv.config();
 
 const PORT = process.env.PORT || 5000;
 
