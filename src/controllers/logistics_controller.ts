@@ -3,6 +3,7 @@ import https from "https";
 import Order from "../models/Order_model";
 import Product from "../models/Product_model";
 import mongoose from "mongoose";
+import { sendShipmentNotificationEmail } from "../services/email_service";
 
 const ITHINK_ACCESS_TOKEN = process.env.ITHINK_ACCESS_TOKEN || "50a3b289fed90fec08c56a741dbae8d4";
 const ITHINK_SECRET_KEY = process.env.ITHINK_SECRET_KEY || "05c218a3ac1be2dbf44031256515b889";
@@ -210,17 +211,16 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
     const storeIdNum = Number(ITHINK_STORE_ID || 32474);
     const orderIdStr = order._id.toString();
 
-    // Construct iThink v3 payload strictly conforming to official API schema
+    // Construct iThink v3 payload strictly conforming to official API schema for order/add.json
     const payload = {
       data: {
         access_token: ITHINK_ACCESS_TOKEN,
         secret_key: ITHINK_SECRET_KEY,
-        store_id: storeIdNum,
-        platform_id: storeIdNum,
+        s_type: "surface",
         pickup_address_id: pickupAddressId,
         return_address_id: returnAddressId,
-        shipment_service_type: "surface",
-        service_type: "surface",
+        store_id: storeIdNum,
+        platform_id: storeIdNum,
         shipments: [
           {
             order: orderIdStr,
@@ -230,7 +230,7 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
             name: customerName,
             company_name: "Artiory",
             add: addressLine1,
-            add2: addressLine2,
+            add2: addressLine2 || "",
             pin: shippingPin,
             city: customerCity,
             state: customerState,
@@ -242,7 +242,7 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
             billing_name: customerName,
             billing_company_name: "Artiory",
             billing_add: addressLine1,
-            billing_add2: addressLine2,
+            billing_add2: addressLine2 || "",
             billing_pin: shippingPin,
             billing_city: customerCity,
             billing_state: customerState,
@@ -254,7 +254,7 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
               product_name: item.name,
               product_quantity: item.qty.toString(),
               product_price: Number(item.price || 0),
-              product_sku: item.productId.toString().slice(-8),
+              product_sku: item.productId ? item.productId.toString().slice(-8) : "ART-01",
               product_tax_rate: "0",
               product_discount: "0",
               product_hsn_code: "6204"
@@ -263,26 +263,19 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
             shipment_width: Number(finalShipmentWidth),
             shipment_height: Number(finalShipmentHeight),
             weight: Number(finalShipmentWeight),
-            shipping_charges: Number(order.shippingCharge !== undefined && order.shippingCharge !== null ? order.shippingCharge : 149),
+            shipping_charges: Number(order.shippingCharge !== undefined && order.shippingCharge !== null ? order.shippingCharge : 0),
             giftwrap_charges: 0,
             transaction_charges: 0,
             total_discount: Number(order.discountAmount || 0),
             first_attemp_discount: 0,
-            cod_amount: paymentMode === "COD" ? Number(order.totalPrice || 0) : 0,
+            cod_amount: paymentMode.toLowerCase() === "cod" ? Number(order.totalPrice || 0) : 0,
             cod_charges: 0,
             eway_bill_number: "",
             gst_number: "",
-            payment_mode: paymentMode,
+            payment_mode: paymentMode.toLowerCase() === "cod" ? "cod" : "prepaid",
             return_address_id: returnAddressId,
             pickup_address_id: pickupAddressId,
-            order_type: "forward",
-            shipment_service_type: "surface",
-            service_type: "surface",
-            shipping_service_type: "surface",
-            reseller_name: "Artiory",
-            send_sms_notification: "yes",
-            send_email_notification: "yes",
-            tracking_notification: "yes"
+            order_type: "forward"
           }
         ]
       }
@@ -309,37 +302,46 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
       });
     }
 
-    console.log("iThink Order Sync Payload:", JSON.stringify(payload));
-    const apiResponse = await postToiThink("order/sync.json", payload);
-    console.log("iThink Order Sync Response:", JSON.stringify(apiResponse));
+    console.log("iThink Order Add Payload:", JSON.stringify(payload));
+    const apiResponse = await postToiThink("order/add.json", payload);
+    console.log("iThink Order Add Response:", JSON.stringify(apiResponse));
 
-    if (apiResponse && apiResponse.status_code === 200 && apiResponse.data) {
-      // Extract the shipment status mapping
+    if (apiResponse && (apiResponse.status === "success" || apiResponse.status_code === 200) && apiResponse.data) {
       const keys = Object.keys(apiResponse.data);
       const firstShipmentKey = keys[0];
       const shipmentResult = firstShipmentKey ? apiResponse.data[firstShipmentKey] : null;
 
-      if (shipmentResult && (shipmentResult.status === "success" || shipmentResult.status === "Success")) {
-        const awbNumber = shipmentResult.awb_number || shipmentResult.refnum;
-        const courierName = shipmentResult.courier_name || "iThink Logistics Partner";
-        const logisticsOrderId = shipmentResult.order_id || "N/A";
+      const hasWaybill = shipmentResult && shipmentResult.waybill && String(shipmentResult.waybill).trim().length > 5;
+      const isSuccess = shipmentResult && (
+        shipmentResult.status === "success" || 
+        shipmentResult.status === "Success" || 
+        hasWaybill
+      );
+
+      if (isSuccess && shipmentResult) {
+        const awbNumber = shipmentResult.waybill || shipmentResult.awb_number;
+        const courierName = shipmentResult.logistic_name || shipmentResult.courier_name || "Delhivery";
+        const logisticsOrderId = shipmentResult.order_id || shipmentResult.waybill || "N/A";
+        const trackingUrl = shipmentResult.tracking_url || (awbNumber ? `https://www.ithinklogistics.co.in/postship/tracking/${awbNumber}` : "");
 
         // Fetch Shipping Label
         let shippingLabelUrl = "";
-        try {
-          const labelPayload = {
-            data: {
-              access_token: ITHINK_ACCESS_TOKEN,
-              secret_key: ITHINK_SECRET_KEY,
-              awb_numbers: awbNumber
+        if (awbNumber && awbNumber !== "N/A") {
+          try {
+            const labelPayload = {
+              data: {
+                access_token: ITHINK_ACCESS_TOKEN,
+                secret_key: ITHINK_SECRET_KEY,
+                awb_numbers: awbNumber
+              }
+            };
+            const labelResponse = await postToiThink("shipping/label.json", labelPayload);
+            if (labelResponse && (labelResponse.status === "success" || labelResponse.status_code === 200)) {
+              shippingLabelUrl = labelResponse.file_name || labelResponse.data?.label_url || labelResponse.data?.url || "";
             }
-          };
-          const labelResponse = await postToiThink("shipping/label.json", labelPayload);
-          if (labelResponse && labelResponse.status_code === 200 && labelResponse.data) {
-            shippingLabelUrl = labelResponse.data.label_url || "";
+          } catch (labelErr) {
+            console.error("Failed to fetch shipping label:", labelErr);
           }
-        } catch (labelErr) {
-          console.error("Failed to fetch shipping label:", labelErr);
         }
 
         // Update local database order document
@@ -351,15 +353,22 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
         if (shippingLabelUrl) {
           order.shippingLabelUrl = shippingLabelUrl;
         }
+        if (trackingUrl) {
+          order.trackingUrl = trackingUrl;
+        }
 
         await order.save();
+
+        // Send real-time dispatch notification email to customer
+        sendShipmentNotificationEmail(order).catch((e) => console.error("Shipment notification email error:", e));
 
         return res.status(200).json({
           success: true,
           message: "Shipment booked successfully!",
           awbNumber,
           courierName,
-          shippingLabelUrl
+          shippingLabelUrl,
+          trackingUrl
         });
       } else {
         const errorMsg = shipmentResult?.remark || "Failed to process consignment on iThink Logistics";
@@ -504,12 +513,11 @@ export const bookShipmentForOrder = async (
       data: {
         access_token: ITHINK_ACCESS_TOKEN,
         secret_key: ITHINK_SECRET_KEY,
-        store_id: storeIdNum,
-        platform_id: storeIdNum,
+        s_type: "surface",
         pickup_address_id: pickupAddressId,
         return_address_id: returnAddressId,
-        shipment_service_type: "surface",
-        service_type: "surface",
+        store_id: storeIdNum,
+        platform_id: storeIdNum,
         shipments: [
           {
             order: orderIdStr,
@@ -519,7 +527,7 @@ export const bookShipmentForOrder = async (
             name: customerName,
             company_name: "Artiory",
             add: addressLine1,
-            add2: addressLine2,
+            add2: addressLine2 || "",
             pin: shippingPin,
             city: customerCity,
             state: customerState,
@@ -531,7 +539,7 @@ export const bookShipmentForOrder = async (
             billing_name: customerName,
             billing_company_name: "Artiory",
             billing_add: addressLine1,
-            billing_add2: addressLine2,
+            billing_add2: addressLine2 || "",
             billing_pin: shippingPin,
             billing_city: customerCity,
             billing_state: customerState,
@@ -543,7 +551,7 @@ export const bookShipmentForOrder = async (
               product_name: item.name,
               product_quantity: item.qty.toString(),
               product_price: Number(item.price || 0),
-              product_sku: item.productId.toString().slice(-8),
+              product_sku: item.productId ? item.productId.toString().slice(-8) : "ART-01",
               product_tax_rate: "0",
               product_discount: "0",
               product_hsn_code: "6204"
@@ -557,49 +565,83 @@ export const bookShipmentForOrder = async (
             transaction_charges: 0,
             total_discount: Number(order.discountAmount || 0),
             first_attemp_discount: 0,
-            cod_amount: paymentMode === "COD" ? Number(order.totalPrice || 0) : 0,
+            cod_amount: paymentMode.toLowerCase() === "cod" ? Number(order.totalPrice || 0) : 0,
             cod_charges: 0,
             eway_bill_number: "",
             gst_number: "",
-            payment_mode: paymentMode,
+            payment_mode: paymentMode.toLowerCase() === "cod" ? "cod" : "prepaid",
             return_address_id: returnAddressId,
             pickup_address_id: pickupAddressId,
-            order_type: "forward",
-            shipment_service_type: "surface",
-            service_type: "surface",
-            shipping_service_type: "surface",
-            reseller_name: "Artiory",
-            send_sms_notification: "yes",
-            send_email_notification: "yes",
-            tracking_notification: "yes"
+            order_type: "forward"
           }
         ]
       }
     };
 
     console.log("iThink Auto-Book Payload:", JSON.stringify(payload));
-    const apiResponse = await postToiThink("order/sync.json", payload);
+    const apiResponse = await postToiThink("order/add.json", payload);
     console.log("iThink Auto-Book Response:", JSON.stringify(apiResponse));
 
-    if (apiResponse && apiResponse.status_code === 200 && apiResponse.data) {
+    if (apiResponse && (apiResponse.status === "success" || apiResponse.status_code === 200) && apiResponse.data) {
       const keys = Object.keys(apiResponse.data);
       const firstShipmentKey = keys[0];
       const shipmentResult = firstShipmentKey ? apiResponse.data[firstShipmentKey] : null;
 
-      if (shipmentResult && (shipmentResult.status === "success" || shipmentResult.status === "Success")) {
-        const awbNumber = shipmentResult.awb_number || shipmentResult.refnum;
-        const courierName = shipmentResult.courier_name || "iThink Logistics Partner";
-        const logisticsOrderId = shipmentResult.order_id || "N/A";
+      const hasWaybill = shipmentResult && shipmentResult.waybill && String(shipmentResult.waybill).trim().length > 5;
+      const isSuccess = shipmentResult && (
+        shipmentResult.status === "success" || 
+        shipmentResult.status === "Success" || 
+        hasWaybill
+      );
+
+      if (isSuccess && shipmentResult) {
+        const awbNumber = shipmentResult.waybill || shipmentResult.awb_number;
+        const courierName = shipmentResult.logistic_name || shipmentResult.courier_name || "Delhivery";
+        const logisticsOrderId = shipmentResult.order_id || shipmentResult.waybill || "N/A";
+        const trackingUrl = shipmentResult.tracking_url || (awbNumber ? `https://www.ithinklogistics.co.in/postship/tracking/${awbNumber}` : "");
+
+        // Fetch Shipping Label
+        let shippingLabelUrl = "";
+        if (awbNumber && awbNumber !== "N/A") {
+          try {
+            const labelPayload = {
+              data: {
+                access_token: ITHINK_ACCESS_TOKEN,
+                secret_key: ITHINK_SECRET_KEY,
+                awb_numbers: awbNumber
+              }
+            };
+            const labelResponse = await postToiThink("shipping/label.json", labelPayload);
+            if (labelResponse && (labelResponse.status === "success" || labelResponse.status_code === 200)) {
+              shippingLabelUrl = labelResponse.file_name || labelResponse.data?.label_url || labelResponse.data?.url || "";
+            }
+          } catch (labelErr) {
+            console.error("Failed to fetch shipping label:", labelErr);
+          }
+        }
 
         order.awbNumber = awbNumber;
         order.courierName = courierName;
         order.logisticsOrderId = logisticsOrderId;
         order.shipmentStatus = "Shipped";
         order.status = "Shipped";
+        if (shippingLabelUrl) {
+          order.shippingLabelUrl = shippingLabelUrl;
+        }
+        if (trackingUrl) {
+          order.trackingUrl = trackingUrl;
+        }
+
         await order.save();
 
-        console.log(`Auto-shipped Order ${order._id} with AWB ${awbNumber}`);
-        return { success: true, awbNumber, courierName };
+        // Send real-time dispatch notification email to customer
+        sendShipmentNotificationEmail(order).catch((e) => console.error("Shipment notification email error:", e));
+
+        console.log(`Auto-shipped Order ${order._id} with AWB ${awbNumber} (${courierName})`);
+        return { success: true, awbNumber, courierName, trackingUrl, shippingLabelUrl };
+      } else {
+        console.error("Auto-ship booking unsuccessful:", shipmentResult?.remark || "Unknown error");
+        return { success: false, message: shipmentResult?.remark || "Auto-ship booking failed" };
       }
     }
     return { success: false, message: "Auto-ship booking response failed" };
@@ -1236,9 +1278,9 @@ export const getiThinkShippingLabel = async (req: Request, res: Response): Promi
     const labelResponse = await postToiThink("shipping/label.json", payload);
     console.log("iThink Shipping Label Response:", JSON.stringify(labelResponse));
 
-    if (labelResponse && (labelResponse.status_code === 200 || labelResponse.status === "success") && labelResponse.data && (labelResponse.data.label_url || labelResponse.data.url)) {
-      const labelUrl = labelResponse.data.label_url || labelResponse.data.url || "";
+    const labelUrl = labelResponse?.file_name || labelResponse?.data?.label_url || labelResponse?.data?.url || "";
 
+    if (labelResponse && (labelResponse.status_code === 200 || labelResponse.status === "success") && labelUrl) {
       // Update local Order record if single AWB
       if (labelUrl && typeof awbInput === "string" && !awbInput.includes(",")) {
         try {
@@ -1254,7 +1296,7 @@ export const getiThinkShippingLabel = async (req: Request, res: Response): Promi
       return res.status(200).json({
         success: true,
         label_url: labelUrl,
-        data: labelResponse.data
+        data: labelResponse.data || { label_url: labelUrl, file_name: labelUrl }
       });
     } else {
       // Local/Dynamic Fallback: lookup Order in database and serve printable HTML Shipping Label

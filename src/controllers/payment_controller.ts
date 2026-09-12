@@ -6,6 +6,7 @@ import Order from "../models/Order_model";
 import User from "../models/User_model";
 import Product from "../models/Product_model";
 import { bookShipmentForOrder } from "./logistics_controller";
+import { sendOrderConfirmationEmails, handleSuccessfulPayment } from "../services/email_service";
 
 /**
  * Helper to perform secure HTTPS POST requests to SabPaisa PG 3.0 REST API
@@ -177,6 +178,9 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
 
       // Auto-trigger iThink Logistics shipment booking & notifications immediately
       bookShipmentForOrder(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+
+      // Trigger Resend transactional email notification to Customer & Admin
+      sendOrderConfirmationEmails(order._id).catch((e) => console.error("Resend confirmation email error:", e));
 
       return res.status(200).json({
         success: true,
@@ -393,24 +397,33 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
       if (clientTxnId) {
         order.clientTxnId = clientTxnId;
       }
+
+      // Decrement product inventory on verified successful payment
+      for (const item of order.orderItems) {
+        if (item.productId) {
+          await Product.findByIdAndUpdate(item.productId, {
+            $inc: { stockQuantity: -item.qty }
+          }).catch(() => {});
+        }
+      }
+
       if (order.user) {
         await User.findByIdAndUpdate(order.user, {
           $set: { cart: [] }
-        });
+        }).catch(() => {});
       }
       await order.save();
       console.log(`SabPaisa Callback Successful: Order ${order._id} status set to Paid (Txn: ${sabpaisaTxnId})`);
 
       // Auto-trigger iThink Logistics shipment booking & notifications immediately
       bookShipmentForOrder(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+
+      // Trigger Resend transactional email notification to Customer & Admin
+      sendOrderConfirmationEmails(order._id).catch((e) => console.error("Resend confirmation email error:", e));
     } else {
-      // Mark as Failed — DO NOT delete the order so admin and user retain full records!
-      order.status = "Failed";
-      if (sabpaisaTxnId && sabpaisaTxnId !== "N/A") {
-        order.sabpaisaTxnId = sabpaisaTxnId;
-      }
-      await order.save();
-      console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} status set to Failed`);
+      // Payment Failed / Cancelled — Delete order so no failed/pending orders clutter database
+      await Order.findByIdAndDelete(order._id).catch(() => {});
+      console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} deleted from database.`);
     }
 
     let displayAmount = amount;
@@ -453,7 +466,7 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
         status: order.status,
         redirectUrl: isSuccess
           ? successRedirectUrl
-          : `${activeFrontendUrl}/checkout?error=PaymentFailed&orderId=${order._id}`
+          : `${activeFrontendUrl}/checkout?error=PaymentFailed`
       });
     }
 
@@ -461,7 +474,7 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
     if (isSuccess) {
       return res.redirect(successRedirectUrl);
     } else {
-      return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed&orderId=${order._id}`);
+      return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed`);
     }
   } catch (err: any) {
     console.error("SabPaisa Callback Error:", err);
@@ -532,13 +545,20 @@ export const enquireSabPaisaPayment = async (req: Request, res: Response): Promi
       if (isSuccess && order.status !== "Paid") {
         order.status = "Paid";
         order.clientTxnId = txnIdToQuery;
+        for (const item of order.orderItems) {
+          if (item.productId) {
+            await Product.findByIdAndUpdate(item.productId, {
+              $inc: { stockQuantity: -item.qty }
+            }).catch(() => {});
+          }
+        }
         await order.save();
         if (order.user) {
-          await User.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+          await User.findByIdAndUpdate(order.user, { $set: { cart: [] } }).catch(() => {});
         }
       } else if (!isSuccess && (upperStatus === "EXPIRED" || upperStatus === "FAILED" || upperStatus === "0300")) {
-        order.status = "Failed";
-        await order.save();
+        await Order.findByIdAndDelete(order._id).catch(() => {});
+        console.log(`SabPaisa Enquiry: Order ${order._id} was expired/failed and deleted.`);
       }
     }
 

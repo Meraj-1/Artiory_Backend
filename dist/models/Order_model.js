@@ -71,6 +71,9 @@ const orderSchema = new mongoose_1.default.Schema({
     shippingLabelUrl: {
         type: String
     },
+    trackingUrl: {
+        type: String
+    },
     clientTxnId: {
         type: String
     },

@@ -4,6 +4,7 @@ import Order from "../models/Order_model";
 import Product from "../models/Product_model";
 import User from "../models/User_model";
 import { bookShipmentForOrder } from "./logistics_controller";
+import { sendOrderConfirmationEmails } from "../services/email_service";
 
 
 export const createOrder = async (
@@ -24,7 +25,7 @@ export const createOrder = async (
       return res.status(400).json({ message: "No order items" });
     }
 
-    // 1. Atomic stock validation & decrement for ordered products
+    // 1. Stock availability validation
     for (const item of orderItems) {
       if (item.productId && mongoose.Types.ObjectId.isValid(item.productId)) {
         const product = await Product.findById(item.productId);
@@ -35,9 +36,6 @@ export const createOrder = async (
               message: `Insufficient stock for product "${product.productName}". Only ${currentStock} items left in stock!`
             });
           }
-          await Product.findByIdAndUpdate(item.productId, {
-            $inc: { stockQuantity: -item.qty }
-          });
         }
       }
     }
@@ -226,8 +224,12 @@ export const getAllOrders = async (
   res: Response
 ): Promise<any> => {
   try {
-    // 1. Try to auto-reconcile any Pending orders without deleting them
-    const pendingOrders = await Order.find({ status: "Pending" });
+    // 1. Auto-cleanup or reconcile abandoned pending orders (> 15 mins old)
+    const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const pendingOrders = await Order.find({
+      status: "Pending",
+      createdAt: { $lt: fifteenMinsAgo }
+    });
 
     if (pendingOrders.length > 0) {
       await Promise.all(
@@ -237,19 +239,29 @@ export const getAllOrders = async (
               const status = (await querySabPaisaStatus(order.clientTxnId) || "").toUpperCase().trim();
               if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID" || status === "0200" || status === "OK") {
                 order.status = "Paid";
+                for (const item of order.orderItems) {
+                  if (item.productId) {
+                    await Product.findByIdAndUpdate(item.productId, { $inc: { stockQuantity: -item.qty } }).catch(() => {});
+                  }
+                }
                 await order.save();
                 console.log(`Reconciled Order ${order._id} to Paid`);
+                return;
               }
             }
           } catch (err) {
             console.error(`Reconciliation check error for order ${order._id}:`, err);
           }
+          // If abandoned/unpaid, delete it so it does not remain in DB
+          await Order.findByIdAndDelete(order._id).catch(() => {});
         })
       );
     }
 
-    // 2. Return ALL orders to the dashboard so admin has full visibility
-    const allOrders = await Order.find()
+    // 2. Return ONLY confirmed Paid/Shipped orders to dashboard (No Pending, No Failed)
+    const allOrders = await Order.find({
+      status: { $in: ["Paid", "Shipped", "In-Transit", "Delivered", "RTO"] }
+    })
       .populate("user", "name email number")
       .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
       .sort({ createdAt: -1 });
@@ -301,6 +313,9 @@ export const reconcileOrder = async (
       // Auto-trigger iThink Logistics shipment booking & notifications immediately
       bookShipmentForOrder(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
 
+      // Trigger Resend transactional email notification to Customer & Admin
+      sendOrderConfirmationEmails(order._id).catch((e) => console.error("Resend confirmation email error:", e));
+
       return res.status(200).json({ success: true, message: "Order successfully marked as Paid!", status: order.status });
     }
 
@@ -317,6 +332,9 @@ export const reconcileOrder = async (
 
       // Auto-trigger iThink Logistics shipment booking & notifications immediately
       bookShipmentForOrder(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+
+      // Trigger Resend transactional email notification to Customer & Admin
+      sendOrderConfirmationEmails(order._id).catch((e) => console.error("Resend confirmation email error:", e));
 
       return res.status(200).json({ success: true, message: "Order reconciled successfully with SabPaisa! Status set to Paid.", status: order.status });
     } else {

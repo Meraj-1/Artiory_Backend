@@ -9,7 +9,9 @@ const https_1 = __importDefault(require("https"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const Order_model_1 = __importDefault(require("../models/Order_model"));
 const User_model_1 = __importDefault(require("../models/User_model"));
+const Product_model_1 = __importDefault(require("../models/Product_model"));
 const logistics_controller_1 = require("./logistics_controller");
+const email_service_1 = require("../services/email_service");
 /**
  * Helper to perform secure HTTPS POST requests to SabPaisa PG 3.0 REST API
  */
@@ -161,6 +163,8 @@ const initiateSabPaisaPayment = async (req, res) => {
             }
             // Auto-trigger iThink Logistics shipment booking & notifications immediately
             (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+            // Trigger Resend transactional email notification to Customer & Admin
+            (0, email_service_1.sendOrderConfirmationEmails)(order._id).catch((e) => console.error("Resend confirmation email error:", e));
             return res.status(200).json({
                 success: true,
                 isBypass: true,
@@ -355,24 +359,30 @@ const sabPaisaCallback = async (req, res) => {
             if (clientTxnId) {
                 order.clientTxnId = clientTxnId;
             }
+            // Decrement product inventory on verified successful payment
+            for (const item of order.orderItems) {
+                if (item.productId) {
+                    await Product_model_1.default.findByIdAndUpdate(item.productId, {
+                        $inc: { stockQuantity: -item.qty }
+                    }).catch(() => { });
+                }
+            }
             if (order.user) {
                 await User_model_1.default.findByIdAndUpdate(order.user, {
                     $set: { cart: [] }
-                });
+                }).catch(() => { });
             }
             await order.save();
             console.log(`SabPaisa Callback Successful: Order ${order._id} status set to Paid (Txn: ${sabpaisaTxnId})`);
             // Auto-trigger iThink Logistics shipment booking & notifications immediately
             (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+            // Trigger Resend transactional email notification to Customer & Admin
+            (0, email_service_1.sendOrderConfirmationEmails)(order._id).catch((e) => console.error("Resend confirmation email error:", e));
         }
         else {
-            // Mark as Failed — DO NOT delete the order so admin and user retain full records!
-            order.status = "Failed";
-            if (sabpaisaTxnId && sabpaisaTxnId !== "N/A") {
-                order.sabpaisaTxnId = sabpaisaTxnId;
-            }
-            await order.save();
-            console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} status set to Failed`);
+            // Payment Failed / Cancelled — Delete order so no failed/pending orders clutter database
+            await Order_model_1.default.findByIdAndDelete(order._id).catch(() => { });
+            console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} deleted from database.`);
         }
         let displayAmount = amount;
         if (Number(amount) > 1000 && !amount.toString().includes(".")) {
@@ -412,7 +422,7 @@ const sabPaisaCallback = async (req, res) => {
                 status: order.status,
                 redirectUrl: isSuccess
                     ? successRedirectUrl
-                    : `${activeFrontendUrl}/checkout?error=PaymentFailed&orderId=${order._id}`
+                    : `${activeFrontendUrl}/checkout?error=PaymentFailed`
             });
         }
         // Direct browser redirect
@@ -420,7 +430,7 @@ const sabPaisaCallback = async (req, res) => {
             return res.redirect(successRedirectUrl);
         }
         else {
-            return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed&orderId=${order._id}`);
+            return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed`);
         }
     }
     catch (err) {
@@ -483,14 +493,21 @@ const enquireSabPaisaPayment = async (req, res) => {
             if (isSuccess && order.status !== "Paid") {
                 order.status = "Paid";
                 order.clientTxnId = txnIdToQuery;
+                for (const item of order.orderItems) {
+                    if (item.productId) {
+                        await Product_model_1.default.findByIdAndUpdate(item.productId, {
+                            $inc: { stockQuantity: -item.qty }
+                        }).catch(() => { });
+                    }
+                }
                 await order.save();
                 if (order.user) {
-                    await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } });
+                    await User_model_1.default.findByIdAndUpdate(order.user, { $set: { cart: [] } }).catch(() => { });
                 }
             }
             else if (!isSuccess && (upperStatus === "EXPIRED" || upperStatus === "FAILED" || upperStatus === "0300")) {
-                order.status = "Failed";
-                await order.save();
+                await Order_model_1.default.findByIdAndDelete(order._id).catch(() => { });
+                console.log(`SabPaisa Enquiry: Order ${order._id} was expired/failed and deleted.`);
             }
         }
         return res.status(200).json({

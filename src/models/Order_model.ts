@@ -37,6 +37,7 @@ export interface IOrder extends Document {
   logisticsOrderId?: string;
   shipmentStatus: string;
   shippingLabelUrl?: string;
+  trackingUrl?: string;
   clientTxnId?: string;
   sabpaisaTxnId?: string;
   returnUrl?: string;
@@ -111,6 +112,9 @@ const orderSchema = new mongoose.Schema<IOrder>(
       default: "Unshipped" // Unshipped, Shipped, In-Transit, Delivered, RTO
     },
     shippingLabelUrl: {
+      type: String
+    },
+    trackingUrl: {
       type: String
     },
     clientTxnId: {

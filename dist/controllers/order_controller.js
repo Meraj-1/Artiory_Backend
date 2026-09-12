@@ -9,13 +9,14 @@ const Order_model_1 = __importDefault(require("../models/Order_model"));
 const Product_model_1 = __importDefault(require("../models/Product_model"));
 const User_model_1 = __importDefault(require("../models/User_model"));
 const logistics_controller_1 = require("./logistics_controller");
+const email_service_1 = require("../services/email_service");
 const createOrder = async (req, res) => {
     try {
         const { orderItems, totalPrice, shippingAddress, discountAmount = 0, shippingCharge = 0, couponCode = "", } = req.body;
         if (!orderItems || orderItems.length === 0) {
             return res.status(400).json({ message: "No order items" });
         }
-        // 1. Atomic stock validation & decrement for ordered products
+        // 1. Stock availability validation
         for (const item of orderItems) {
             if (item.productId && mongoose_1.default.Types.ObjectId.isValid(item.productId)) {
                 const product = await Product_model_1.default.findById(item.productId);
@@ -26,9 +27,6 @@ const createOrder = async (req, res) => {
                             message: `Insufficient stock for product "${product.productName}". Only ${currentStock} items left in stock!`
                         });
                     }
-                    await Product_model_1.default.findByIdAndUpdate(item.productId, {
-                        $inc: { stockQuantity: -item.qty }
-                    });
                 }
             }
         }
@@ -198,8 +196,12 @@ exports.getOrderById = getOrderById;
 const payment_controller_1 = require("./payment_controller");
 const getAllOrders = async (req, res) => {
     try {
-        // 1. Try to auto-reconcile any Pending orders without deleting them
-        const pendingOrders = await Order_model_1.default.find({ status: "Pending" });
+        // 1. Auto-cleanup or reconcile abandoned pending orders (> 15 mins old)
+        const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
+        const pendingOrders = await Order_model_1.default.find({
+            status: "Pending",
+            createdAt: { $lt: fifteenMinsAgo }
+        });
         if (pendingOrders.length > 0) {
             await Promise.all(pendingOrders.map(async (order) => {
                 try {
@@ -207,18 +209,28 @@ const getAllOrders = async (req, res) => {
                         const status = (await (0, payment_controller_1.querySabPaisaStatus)(order.clientTxnId) || "").toUpperCase().trim();
                         if (status === "SUCCESS" || status === "TXN_SUCCESS" || status === "0000" || status === "PAID" || status === "0200" || status === "OK") {
                             order.status = "Paid";
+                            for (const item of order.orderItems) {
+                                if (item.productId) {
+                                    await Product_model_1.default.findByIdAndUpdate(item.productId, { $inc: { stockQuantity: -item.qty } }).catch(() => { });
+                                }
+                            }
                             await order.save();
                             console.log(`Reconciled Order ${order._id} to Paid`);
+                            return;
                         }
                     }
                 }
                 catch (err) {
                     console.error(`Reconciliation check error for order ${order._id}:`, err);
                 }
+                // If abandoned/unpaid, delete it so it does not remain in DB
+                await Order_model_1.default.findByIdAndDelete(order._id).catch(() => { });
             }));
         }
-        // 2. Return ALL orders to the dashboard so admin has full visibility
-        const allOrders = await Order_model_1.default.find()
+        // 2. Return ONLY confirmed Paid/Shipped orders to dashboard (No Pending, No Failed)
+        const allOrders = await Order_model_1.default.find({
+            status: { $in: ["Paid", "Shipped", "In-Transit", "Delivered", "RTO"] }
+        })
             .populate("user", "name email number")
             .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
             .sort({ createdAt: -1 });
@@ -263,6 +275,8 @@ const reconcileOrder = async (req, res) => {
             }
             // Auto-trigger iThink Logistics shipment booking & notifications immediately
             (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+            // Trigger Resend transactional email notification to Customer & Admin
+            (0, email_service_1.sendOrderConfirmationEmails)(order._id).catch((e) => console.error("Resend confirmation email error:", e));
             return res.status(200).json({ success: true, message: "Order successfully marked as Paid!", status: order.status });
         }
         const txnToQuery = clientTxnId || order.clientTxnId || order._id.toString();
@@ -276,6 +290,8 @@ const reconcileOrder = async (req, res) => {
             }
             // Auto-trigger iThink Logistics shipment booking & notifications immediately
             (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+            // Trigger Resend transactional email notification to Customer & Admin
+            (0, email_service_1.sendOrderConfirmationEmails)(order._id).catch((e) => console.error("Resend confirmation email error:", e));
             return res.status(200).json({ success: true, message: "Order reconciled successfully with SabPaisa! Status set to Paid.", status: order.status });
         }
         else {
