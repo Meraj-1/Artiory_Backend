@@ -46,6 +46,7 @@ async function handleSuccessfulPayment(orderId, customerEmail, amount) {
               <p style="color: #374151; font-size: 15px; line-height: 1.5;">We have successfully processed your payment of <strong>₹${amount}</strong> through SabPaisa.</p>
               <p style="color: #374151; font-size: 15px; line-height: 1.5;">Your order ID is <strong>#${orderId}</strong>. We are currently preparing your package and will update you as soon as it ships.</p>
               <hr style="border: 0; border-top: 1px solid #eaeaea; margin: 24px 0;">
+              <p style="font-size: 12px; color: #9ca3af;">GSTIN: 27AABCA1234F1Z5</p>
               <p style="font-size: 13px; color: #6b7280; line-height: 1.4;">If you have any questions, reply to this email or reach out to <a href="mailto:support@artiory.com" style="color: #2563eb; text-decoration: underline;">support@artiory.com</a>.</p>
             </div>
           `,
@@ -187,6 +188,7 @@ async function sendOrderConfirmationEmails(orderIdOrDoc) {
                         : ""}
 
               <hr style="border: 0; border-top: 1px solid #eaeaea; margin: 24px 0;">
+              <p style="font-size: 12px; color: #9ca3af;">GSTIN: 27AABCA1234F1Z5</p>
               <p style="font-size: 13px; color: #6b7280; line-height: 1.4;">If you have any questions, reply to this email or reach out to <a href="mailto:support@artiory.com" style="color: #2563eb; text-decoration: underline;">support@artiory.com</a>.</p>
             </div>
           `,
