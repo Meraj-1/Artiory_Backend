@@ -247,20 +247,29 @@ export const getAllOrders = async (
                 await order.save();
                 console.log(`Reconciled Order ${order._id} to Paid`);
                 return;
+              } else if (status === "EXPIRED" || status === "FAILED" || status === "0300") {
+                order.status = "Failed";
+                await order.save();
+                return;
               }
+              // status still PENDING from SabPaisa — leave as Pending, do not touch
+              return;
             }
           } catch (err) {
             console.error(`Reconciliation check error for order ${order._id}:`, err);
           }
-          // If abandoned/unpaid, delete it so it does not remain in DB
-          await Order.findByIdAndDelete(order._id).catch(() => {});
+          // If > 15 mins old and still Pending with no txnId, mark as Failed (keep audit trail)
+          if (!order.clientTxnId) {
+            order.status = "Failed";
+            await order.save().catch(() => {});
+          }
         })
       );
     }
 
-    // 2. Return ONLY confirmed Paid/Shipped orders to dashboard (No Pending, No Failed)
+    // 2. Return confirmed Paid/Shipped orders + Failed orders (for reconciliation) to dashboard
     const allOrders = await Order.find({
-      status: { $in: ["Paid", "Shipped", "In-Transit", "Delivered", "RTO"] }
+      status: { $in: ["Paid", "Shipped", "In-Transit", "Delivered", "RTO", "Failed"] }
     })
       .populate("user", "name email number")
       .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
@@ -288,7 +297,7 @@ export const reconcileOrder = async (
       order = await Order.findById(orderId);
     }
     if (!order && clientTxnId) {
-      const parsedId = clientTxnId.split("-")[0];
+      const parsedId = clientTxnId.length >= 24 ? clientTxnId.substring(0, 24) : clientTxnId;
       if (mongoose.Types.ObjectId.isValid(parsedId)) {
         order = await Order.findById(parsedId);
       }

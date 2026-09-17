@@ -361,19 +361,22 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
       return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=MissingTxnId`);
     }
 
-    // Extract Order ID (first segment of clientTxnId)
-    const orderId = clientTxnId.split("-")[0];
-
+    // Extract Order ID from clientTxnId (format: "<24charObjectId>-<timestamp6>")
+    // Try full clientTxnId as ObjectId first, then extract prefix, then fallback to DB lookup
     let order = null;
-    if (mongoose.Types.ObjectId.isValid(orderId)) {
-      order = await Order.findById(orderId);
+    const rawOrderId = clientTxnId.length === 24 && mongoose.Types.ObjectId.isValid(clientTxnId)
+      ? clientTxnId
+      : clientTxnId.substring(0, 24);
+
+    if (mongoose.Types.ObjectId.isValid(rawOrderId)) {
+      order = await Order.findById(rawOrderId);
     }
     if (!order) {
       order = await Order.findOne({ clientTxnId });
     }
 
     if (!order) {
-      console.error(`SabPaisa Callback: Order not found for clientTxnId: ${clientTxnId}, orderId: ${orderId}`);
+      console.error(`SabPaisa Callback: Order not found for clientTxnId: ${clientTxnId}, rawOrderId: ${rawOrderId}`);
       if (req.headers.accept?.includes("application/json") || req.headers["x-forwarded-by"] === "nextjs" || req.is("application/json")) {
         return res.status(404).json({ success: false, message: "Order not found", clientTxnId });
       }
@@ -390,40 +393,47 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
       upperStatus === "OK";
 
     if (isSuccess) {
-      order.status = "Paid";
-      if (sabpaisaTxnId && sabpaisaTxnId !== "N/A") {
-        order.sabpaisaTxnId = sabpaisaTxnId;
-      }
-      if (clientTxnId) {
-        order.clientTxnId = clientTxnId;
-      }
+      // Only update if not already Paid (prevent duplicate processing)
+      if (order.status !== "Paid") {
+        order.status = "Paid";
+        if (sabpaisaTxnId && sabpaisaTxnId !== "N/A") {
+          order.sabpaisaTxnId = sabpaisaTxnId;
+        }
+        if (clientTxnId) {
+          order.clientTxnId = clientTxnId;
+        }
 
-      // Decrement product inventory on verified successful payment
-      for (const item of order.orderItems) {
-        if (item.productId) {
-          await Product.findByIdAndUpdate(item.productId, {
-            $inc: { stockQuantity: -item.qty }
+        // Decrement product inventory on verified successful payment
+        for (const item of order.orderItems) {
+          if (item.productId) {
+            await Product.findByIdAndUpdate(item.productId, {
+              $inc: { stockQuantity: -item.qty }
+            }).catch(() => {});
+          }
+        }
+
+        if (order.user) {
+          await User.findByIdAndUpdate(order.user, {
+            $set: { cart: [] }
           }).catch(() => {});
         }
+        await order.save();
+        console.log(`SabPaisa Callback Successful: Order ${order._id} status set to Paid (Txn: ${sabpaisaTxnId})`);
+
+        // Auto-trigger iThink Logistics shipment booking & notifications immediately
+        bookShipmentForOrder(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+
+        // Trigger Resend transactional email notification to Customer & Admin
+        sendOrderConfirmationEmails(order._id).catch((e) => console.error("Resend confirmation email error:", e));
+      } else {
+        console.log(`SabPaisa Callback: Order ${order._id} already Paid, skipping duplicate processing.`);
       }
-
-      if (order.user) {
-        await User.findByIdAndUpdate(order.user, {
-          $set: { cart: [] }
-        }).catch(() => {});
-      }
-      await order.save();
-      console.log(`SabPaisa Callback Successful: Order ${order._id} status set to Paid (Txn: ${sabpaisaTxnId})`);
-
-      // Auto-trigger iThink Logistics shipment booking & notifications immediately
-      bookShipmentForOrder(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
-
-      // Trigger Resend transactional email notification to Customer & Admin
-      sendOrderConfirmationEmails(order._id).catch((e) => console.error("Resend confirmation email error:", e));
     } else {
-      // Payment Failed / Cancelled — Delete order so no failed/pending orders clutter database
-      await Order.findByIdAndDelete(order._id).catch(() => {});
-      console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} deleted from database.`);
+      // Payment Failed / Cancelled — Mark as Failed, do NOT delete (keeps audit trail)
+      order.status = "Failed";
+      if (clientTxnId) order.clientTxnId = clientTxnId;
+      await order.save();
+      console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} marked as Failed (status: ${statusCode}).`);
     }
 
     let displayAmount = amount;
@@ -532,13 +542,14 @@ export const enquireSabPaisaPayment = async (req: Request, res: Response): Promi
       upperStatus === "OK";
 
     // Auto-update Order in DB
-    const targetOrderId = txnIdToQuery.split("-")[0];
+    const rawTxnId = txnIdToQuery.toString();
+    const rawTargetId = rawTxnId.length >= 24 ? rawTxnId.substring(0, 24) : rawTxnId;
     let order = null;
-    if (mongoose.Types.ObjectId.isValid(targetOrderId)) {
-      order = await Order.findById(targetOrderId);
+    if (mongoose.Types.ObjectId.isValid(rawTargetId)) {
+      order = await Order.findById(rawTargetId);
     }
     if (!order) {
-      order = await Order.findOne({ clientTxnId: txnIdToQuery });
+      order = await Order.findOne({ clientTxnId: rawTxnId });
     }
 
     if (order) {
@@ -557,8 +568,9 @@ export const enquireSabPaisaPayment = async (req: Request, res: Response): Promi
           await User.findByIdAndUpdate(order.user, { $set: { cart: [] } }).catch(() => {});
         }
       } else if (!isSuccess && (upperStatus === "EXPIRED" || upperStatus === "FAILED" || upperStatus === "0300")) {
-        await Order.findByIdAndDelete(order._id).catch(() => {});
-        console.log(`SabPaisa Enquiry: Order ${order._id} was expired/failed and deleted.`);
+        order.status = "Failed";
+        await order.save().catch(() => {});
+        console.log(`SabPaisa Enquiry: Order ${order._id} marked as Failed.`);
       }
     }
 

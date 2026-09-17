@@ -96,8 +96,10 @@ export const getNotifications = async (req: Request, res: Response): Promise<any
       }
     });
 
-    // 5. Live Recent Orders (Last 25 orders)
-    const recentOrders = await Order.find()
+    // 5. Live Recent Orders (Last 25 confirmed orders only - no Pending)
+    const recentOrders = await Order.find({
+      status: { $in: ["Paid", "Shipped", "In-Transit", "Delivered", "RTO", "Failed"] }
+    })
       .sort({ createdAt: -1 })
       .limit(25)
       .populate("user")
@@ -124,22 +126,6 @@ export const getNotifications = async (req: Request, res: Response): Promise<any
             read: readMap.get(id) || false,
             badge: "PAID",
             badgeColor: "#22c55e",
-            createdAt: o.createdAt || new Date(),
-          });
-        }
-      } else if (o.status === "Pending") {
-        const id = `ord_pend_${o._id}`;
-        if (!dismissedSet.has(id)) {
-          notifications.push({
-            id,
-            title: `📦 New Order Placed: #${shortId}`,
-            message: `${customerName} placed order #${shortId} worth ₹${totalFormatted}.`,
-            type: "order",
-            category: "order",
-            link: "/dashboard/orders",
-            read: readMap.get(id) || false,
-            badge: "PENDING",
-            badgeColor: "#3b82f6",
             createdAt: o.createdAt || new Date(),
           });
         }

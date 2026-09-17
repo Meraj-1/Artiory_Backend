@@ -68,7 +68,7 @@ async function handleSuccessfulPayment(orderId, customerEmail, amount) {
         }
         // 2. Send Alert Email to the Store Admin
         try {
-            const adminRecipient = (process.env.ADMIN_EMAIL || "admin@artiory.com").trim();
+            const adminRecipient = (process.env.ADMIN_NOTIFICATION_EMAIL || "contact@artiory.com").trim();
             const adminEmailResponse = await resend.emails.send({
                 from: "System Alert <system@artiory.com>",
                 to: adminRecipient,
@@ -206,7 +206,7 @@ async function sendOrderConfirmationEmails(orderIdOrDoc) {
         }
         // 2. Send Alert Email to Store Admin
         try {
-            const adminRecipient = (process.env.ADMIN_EMAIL || "admin@artiory.com").trim();
+            const adminRecipient = (process.env.ADMIN_NOTIFICATION_EMAIL || "contact@artiory.com").trim();
             const adminRes = await resend.emails.send({
                 from: "System Alert <system@artiory.com>",
                 to: adminRecipient,

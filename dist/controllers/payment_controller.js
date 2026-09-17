@@ -328,17 +328,20 @@ const sabPaisaCallback = async (req, res) => {
             console.error("SabPaisa Callback: Missing clientTxnId / merchantTxnId");
             return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=MissingTxnId`);
         }
-        // Extract Order ID (first segment of clientTxnId)
-        const orderId = clientTxnId.split("-")[0];
+        // Extract Order ID from clientTxnId (format: "<24charObjectId>-<timestamp6>")
+        // Try full clientTxnId as ObjectId first, then extract prefix, then fallback to DB lookup
         let order = null;
-        if (mongoose_1.default.Types.ObjectId.isValid(orderId)) {
-            order = await Order_model_1.default.findById(orderId);
+        const rawOrderId = clientTxnId.length === 24 && mongoose_1.default.Types.ObjectId.isValid(clientTxnId)
+            ? clientTxnId
+            : clientTxnId.substring(0, 24);
+        if (mongoose_1.default.Types.ObjectId.isValid(rawOrderId)) {
+            order = await Order_model_1.default.findById(rawOrderId);
         }
         if (!order) {
             order = await Order_model_1.default.findOne({ clientTxnId });
         }
         if (!order) {
-            console.error(`SabPaisa Callback: Order not found for clientTxnId: ${clientTxnId}, orderId: ${orderId}`);
+            console.error(`SabPaisa Callback: Order not found for clientTxnId: ${clientTxnId}, rawOrderId: ${rawOrderId}`);
             if (req.headers.accept?.includes("application/json") || req.headers["x-forwarded-by"] === "nextjs" || req.is("application/json")) {
                 return res.status(404).json({ success: false, message: "Order not found", clientTxnId });
             }
@@ -352,37 +355,46 @@ const sabPaisaCallback = async (req, res) => {
             upperStatus === "0200" ||
             upperStatus === "OK";
         if (isSuccess) {
-            order.status = "Paid";
-            if (sabpaisaTxnId && sabpaisaTxnId !== "N/A") {
-                order.sabpaisaTxnId = sabpaisaTxnId;
-            }
-            if (clientTxnId) {
-                order.clientTxnId = clientTxnId;
-            }
-            // Decrement product inventory on verified successful payment
-            for (const item of order.orderItems) {
-                if (item.productId) {
-                    await Product_model_1.default.findByIdAndUpdate(item.productId, {
-                        $inc: { stockQuantity: -item.qty }
+            // Only update if not already Paid (prevent duplicate processing)
+            if (order.status !== "Paid") {
+                order.status = "Paid";
+                if (sabpaisaTxnId && sabpaisaTxnId !== "N/A") {
+                    order.sabpaisaTxnId = sabpaisaTxnId;
+                }
+                if (clientTxnId) {
+                    order.clientTxnId = clientTxnId;
+                }
+                // Decrement product inventory on verified successful payment
+                for (const item of order.orderItems) {
+                    if (item.productId) {
+                        await Product_model_1.default.findByIdAndUpdate(item.productId, {
+                            $inc: { stockQuantity: -item.qty }
+                        }).catch(() => { });
+                    }
+                }
+                if (order.user) {
+                    await User_model_1.default.findByIdAndUpdate(order.user, {
+                        $set: { cart: [] }
                     }).catch(() => { });
                 }
+                await order.save();
+                console.log(`SabPaisa Callback Successful: Order ${order._id} status set to Paid (Txn: ${sabpaisaTxnId})`);
+                // Auto-trigger iThink Logistics shipment booking & notifications immediately
+                (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
+                // Trigger Resend transactional email notification to Customer & Admin
+                (0, email_service_1.sendOrderConfirmationEmails)(order._id).catch((e) => console.error("Resend confirmation email error:", e));
             }
-            if (order.user) {
-                await User_model_1.default.findByIdAndUpdate(order.user, {
-                    $set: { cart: [] }
-                }).catch(() => { });
+            else {
+                console.log(`SabPaisa Callback: Order ${order._id} already Paid, skipping duplicate processing.`);
             }
-            await order.save();
-            console.log(`SabPaisa Callback Successful: Order ${order._id} status set to Paid (Txn: ${sabpaisaTxnId})`);
-            // Auto-trigger iThink Logistics shipment booking & notifications immediately
-            (0, logistics_controller_1.bookShipmentForOrder)(order._id).catch((e) => console.error("Auto-shipment trigger error:", e));
-            // Trigger Resend transactional email notification to Customer & Admin
-            (0, email_service_1.sendOrderConfirmationEmails)(order._id).catch((e) => console.error("Resend confirmation email error:", e));
         }
         else {
-            // Payment Failed / Cancelled — Delete order so no failed/pending orders clutter database
-            await Order_model_1.default.findByIdAndDelete(order._id).catch(() => { });
-            console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} deleted from database.`);
+            // Payment Failed / Cancelled — Mark as Failed, do NOT delete (keeps audit trail)
+            order.status = "Failed";
+            if (clientTxnId)
+                order.clientTxnId = clientTxnId;
+            await order.save();
+            console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} marked as Failed (status: ${statusCode}).`);
         }
         let displayAmount = amount;
         if (Number(amount) > 1000 && !amount.toString().includes(".")) {
@@ -481,13 +493,14 @@ const enquireSabPaisaPayment = async (req, res) => {
             upperStatus === "0200" ||
             upperStatus === "OK";
         // Auto-update Order in DB
-        const targetOrderId = txnIdToQuery.split("-")[0];
+        const rawTxnId = txnIdToQuery.toString();
+        const rawTargetId = rawTxnId.length >= 24 ? rawTxnId.substring(0, 24) : rawTxnId;
         let order = null;
-        if (mongoose_1.default.Types.ObjectId.isValid(targetOrderId)) {
-            order = await Order_model_1.default.findById(targetOrderId);
+        if (mongoose_1.default.Types.ObjectId.isValid(rawTargetId)) {
+            order = await Order_model_1.default.findById(rawTargetId);
         }
         if (!order) {
-            order = await Order_model_1.default.findOne({ clientTxnId: txnIdToQuery });
+            order = await Order_model_1.default.findOne({ clientTxnId: rawTxnId });
         }
         if (order) {
             if (isSuccess && order.status !== "Paid") {
@@ -506,8 +519,9 @@ const enquireSabPaisaPayment = async (req, res) => {
                 }
             }
             else if (!isSuccess && (upperStatus === "EXPIRED" || upperStatus === "FAILED" || upperStatus === "0300")) {
-                await Order_model_1.default.findByIdAndDelete(order._id).catch(() => { });
-                console.log(`SabPaisa Enquiry: Order ${order._id} was expired/failed and deleted.`);
+                order.status = "Failed";
+                await order.save().catch(() => { });
+                console.log(`SabPaisa Enquiry: Order ${order._id} marked as Failed.`);
             }
         }
         return res.status(200).json({
