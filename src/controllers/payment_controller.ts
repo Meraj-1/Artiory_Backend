@@ -51,11 +51,11 @@ const pg3Request = (url: string, apiKey: string, bodyData: any): Promise<any> =>
 };
 
 // SabPaisa Credentials and Configurations
-const SABPAISA_CLIENT_CODE = process.env.SABPAISA_CLIENT_CODE || "SQUA102";
+const SABPAISA_CLIENT_CODE = process.env.SABPAISA_CLIENT_CODE || "ATHE1";
 const SABPAISA_TRANS_USER_NAME = process.env.SABPAISA_TRANS_USER_NAME || "";
 const SABPAISA_TRANS_USER_PASSWORD = process.env.SABPAISA_TRANS_USER_PASSWORD || "";
-const SABPAISA_AUTH_KEY = process.env.SABPAISA_AUTH_KEY || process.env.SABPAISA_API_KEY || "sp_itOrld7Rm0SGjkqg_VSEXBtZXqi8T26-pMPfpUCxUQo";
-const SABPAISA_AUTH_IV = process.env.SABPAISA_AUTH_IV || process.env.SABPAISA_SECRET_KEY || "sec_lLao-1-yDLmV81YjExxgR00a8o7FgJ8-HLSJj9Od4hY";
+const SABPAISA_AUTH_KEY = (process.env.SABPAISA_AUTH_KEY || process.env.SABPAISA_API_KEY || "").trim();
+const SABPAISA_AUTH_IV = (process.env.SABPAISA_AUTH_IV || process.env.SABPAISA_SECRET_KEY || "").trim();
 const SABPAISA_MERCHANT_API_URL = process.env.SABPAISA_MERCHANT_API_URL || "https://merchant-api.sabpaisa.in";
 const SABPAISA_INIT_URL = process.env.SABPAISA_INIT_URL || "https://securepay.sabpaisa.in/SabPaisa/sabPaisaInit?v=1";
 const SABPAISA_CALLBACK_URL = (process.env.SABPAISA_CALLBACK_URL || "https://artiory.com/api/payment/sabpaisa/callback").replace(/([^:]\/)\/+/g, "$1");
@@ -191,9 +191,16 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
     }
 
     const currentClientCode = (process.env.SABPAISA_CLIENT_CODE || "ATHE1").trim();
-    const currentAuthKey = (process.env.SABPAISA_AUTH_KEY || process.env.SABPAISA_API_KEY || "sp_g7V8rvizRkWzCulNkEk4sY09NezsEeBHdRNoZFZEeJ").trim();
-    const currentAuthIv = (process.env.SABPAISA_AUTH_IV || process.env.SABPAISA_SECRET_KEY || "sec_cJqMwPVmixjzTWC6HWafkirNofzbIvRsXGBE9ASFFY").trim();
-    const currentInitUrl = (process.env.SABPAISA_INIT_URL || "https://stage-securepay.sabpaisa.in/SabPaisa/sabPaisaInit?v=1").trim();
+    const currentAuthKey = SABPAISA_AUTH_KEY;
+    const currentAuthIv = SABPAISA_AUTH_IV;
+    const currentInitUrl = (process.env.SABPAISA_INIT_URL || "https://securepay.sabpaisa.in/SabPaisa/sabPaisaInit?v=1").trim();
+
+    if (!currentAuthKey || !currentAuthIv) {
+      return res.status(500).json({
+        success: false,
+        message: "Payment gateway credentials not configured on server"
+      });
+    }
 
     // Build query string dynamically (only include transUserName/Password if provided, maintaining exact order sequence)
     let queryString = `payerName=${payerName}` +
@@ -296,11 +303,11 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
 
     let clientTxnId = "";
     let sabpaisaTxnId = "N/A";
-    let statusCode = "FAILED";
+    let statusCode = "PENDING";
     let amount = "0.00";
 
-    const currentAuthKey = (process.env.SABPAISA_AUTH_KEY || process.env.SABPAISA_API_KEY || "sp_g7V8rvizRkWzCulNkEk4sY09NezsEeBHdRNoZFZEeJ").trim();
-    const currentAuthIv = (process.env.SABPAISA_AUTH_IV || process.env.SABPAISA_SECRET_KEY || "sec_cJqMwPVmixjzTWC6HWafkirNofzbIvRsXGBE9ASFFY").trim();
+    const currentAuthKey = SABPAISA_AUTH_KEY;
+    const currentAuthIv = SABPAISA_AUTH_IV;
 
     if (encResponse) {
       // Classic Decryption Flow
@@ -429,11 +436,11 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
         console.log(`SabPaisa Callback: Order ${order._id} already Paid, skipping duplicate processing.`);
       }
     } else {
-      // Payment Failed / Cancelled — Mark as Failed, do NOT delete (keeps audit trail)
-      order.status = "Failed";
+      // Payment not confirmed — keep as Pending, do NOT mark Failed
+      // Admin can manually reconcile from dashboard
       if (clientTxnId) order.clientTxnId = clientTxnId;
       await order.save();
-      console.log(`SabPaisa Callback Failed/Cancelled: Order ${order._id} marked as Failed (status: ${statusCode}).`);
+      console.log(`SabPaisa Callback: Order ${order._id} status not confirmed (${statusCode}) — keeping as Pending.`);
     }
 
     let displayAmount = amount;
@@ -568,9 +575,8 @@ export const enquireSabPaisaPayment = async (req: Request, res: Response): Promi
           await User.findByIdAndUpdate(order.user, { $set: { cart: [] } }).catch(() => {});
         }
       } else if (!isSuccess && (upperStatus === "EXPIRED" || upperStatus === "FAILED" || upperStatus === "0300")) {
-        order.status = "Failed";
-        await order.save().catch(() => {});
-        console.log(`SabPaisa Enquiry: Order ${order._id} marked as Failed.`);
+        // Do NOT auto-mark as Failed — keep Pending for admin manual reconciliation
+        console.log(`SabPaisa Enquiry: Order ${order._id} status ${upperStatus} — keeping as Pending`);
       }
     }
 
@@ -608,11 +614,11 @@ export const querySabPaisaStatus = (clientTxnId: string): Promise<string> => {
       const json = await pg3Request(endpoint, SABPAISA_AUTH_KEY, payload);
       console.log(`SabPaisa PG 3.0 Enquiry Response for ${clientTxnId}:`, JSON.stringify(json));
 
-      const status = json?.status || json?.statusCode || json?.data?.status || "FAILED";
+      const status = json?.status || json?.statusCode || json?.data?.status || "PENDING";
       resolve(status);
     } catch (err) {
       console.error("SabPaisa Enquiry error:", err);
-      resolve("FAILED");
+      resolve("PENDING");
     }
   });
 };

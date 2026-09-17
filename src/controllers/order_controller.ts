@@ -113,6 +113,7 @@ export const getMyOrders = async (
                   await User.findByIdAndUpdate(o.user, { $set: { cart: [] } });
                 }
               }
+              // Do NOT auto-mark as Failed — keep Pending for manual reconciliation
             }
           } catch (e) {
             console.error(`Pending order check error for ${o._id}:`, e);
@@ -200,10 +201,8 @@ export const getOrderById = async (
             if (order.user) {
               await User.findByIdAndUpdate(order.user, { $set: { cart: [] } });
             }
-          } else if (status === "EXPIRED" || status === "FAILED" || status === "0300") {
-            order.status = "Failed";
-            await order.save();
           }
+          // Do NOT auto-mark as Failed on SabPaisa FAILED/EXPIRED — admin may need to manually reconcile
         } catch (e) {
           console.error("Order live status enquiry check error:", e);
         }
@@ -248,8 +247,9 @@ export const getAllOrders = async (
                 console.log(`Reconciled Order ${order._id} to Paid`);
                 return;
               } else if (status === "EXPIRED" || status === "FAILED" || status === "0300") {
-                order.status = "Failed";
-                await order.save();
+                // Do NOT auto-mark as Failed — SabPaisa may return FAILED for pending/unqueried txns
+                // Leave as Pending so admin can manually reconcile
+                console.log(`Order ${order._id} SabPaisa status: ${status} — keeping as Pending for manual review`);
                 return;
               }
               // status still PENDING from SabPaisa — leave as Pending, do not touch
@@ -258,18 +258,14 @@ export const getAllOrders = async (
           } catch (err) {
             console.error(`Reconciliation check error for order ${order._id}:`, err);
           }
-          // If > 15 mins old and still Pending with no txnId, mark as Failed (keep audit trail)
-          if (!order.clientTxnId) {
-            order.status = "Failed";
-            await order.save().catch(() => {});
-          }
+          // No clientTxnId = payment was never initiated — keep as Pending for admin to handle manually
         })
       );
     }
 
-    // 2. Return confirmed Paid/Shipped orders + Failed orders (for reconciliation) to dashboard
+    // 2. Return all relevant orders including Pending (for Ship button) + Failed (for reconciliation)
     const allOrders = await Order.find({
-      status: { $in: ["Paid", "Shipped", "In-Transit", "Delivered", "RTO", "Failed"] }
+      status: { $in: ["Pending", "Paid", "Shipped", "In-Transit", "Delivered", "RTO", "Failed"] }
     })
       .populate("user", "name email number")
       .populate("orderItems.productId", "productName skuCode thumbnail images sellingPrice mrp weight")
@@ -328,7 +324,13 @@ export const reconcileOrder = async (
       return res.status(200).json({ success: true, message: "Order successfully marked as Paid!", status: order.status });
     }
 
-    const txnToQuery = clientTxnId || order.clientTxnId || order._id.toString();
+    const txnToQuery = clientTxnId || order.clientTxnId;
+    if (!txnToQuery) {
+      return res.status(400).json({
+        success: false,
+        message: "No SabPaisa Transaction ID found for this order. Use 'Confirm Paid (Manual)' if you verified payment on SabPaisa dashboard."
+      });
+    }
     order.clientTxnId = txnToQuery;
     const status = (await querySabPaisaStatus(txnToQuery) || "").toUpperCase().trim();
 
@@ -347,11 +349,12 @@ export const reconcileOrder = async (
 
       return res.status(200).json({ success: true, message: "Order reconciled successfully with SabPaisa! Status set to Paid.", status: order.status });
     } else {
-      if (status === "EXPIRED" || status === "FAILED" || status === "0300") {
-        order.status = "Failed";
-        await order.save();
-      }
-      return res.status(400).json({ success: false, message: `SabPaisa returned status: ${status}`, status });
+      // Do NOT auto-mark as Failed — admin should use Manual Confirm if payment was received
+      return res.status(400).json({
+        success: false,
+        message: `SabPaisa returned status: "${status}" for txnId: ${txnToQuery}. If payment was successful, use 'Confirm Paid (Manual)' button instead.`,
+        status
+      });
     }
   } catch (error: any) {
     console.error("Reconcile Order Error:", error);
