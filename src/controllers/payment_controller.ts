@@ -147,23 +147,13 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
     const cleanUsername = isDummyUser(process.env.SABPAISA_TRANS_USER_NAME) ? "" : (process.env.SABPAISA_TRANS_USER_NAME || "");
     const cleanPassword = isDummyUser(process.env.SABPAISA_TRANS_USER_PASSWORD) ? "" : (process.env.SABPAISA_TRANS_USER_PASSWORD || "");
 
-    const originHeader = (req.body?.returnUrl as string) || (req.headers.origin as string) || (req.headers.referer as string) || "";
-    let activeFrontendUrl = process.env.FRONTEND_URL || "https://artiory.com";
-
-    if (originHeader.includes("localhost:3000") || originHeader.includes("127.0.0.1:3000")) {
-      activeFrontendUrl = "http://localhost:3000";
-    } else if (originHeader.includes("localhost:3001") || originHeader.includes("127.0.0.1:3001")) {
-      activeFrontendUrl = "http://localhost:3001";
-    } else if (originHeader.includes("localhost:3002") || originHeader.includes("127.0.0.1:3002")) {
-      activeFrontendUrl = "http://localhost:3002";
-    } else if (originHeader.includes("artiory.com") || originHeader.includes("3011") || process.env.NODE_ENV === "production") {
-      activeFrontendUrl = "https://artiory.com";
-    }
+    // Always use the fixed production callback URL from env — never derive from request origin
+    // SabPaisa requires a public HTTPS URL, localhost will never receive callbacks
+    const activeCallbackUrl = (process.env.SABPAISA_CALLBACK_URL || "https://artiory.com/api/payment/sabpaisa/callback").trim();
+    const activeFrontendUrl = (process.env.FRONTEND_URL || "https://artiory.com").trim();
 
     order.returnUrl = activeFrontendUrl;
     await order.save();
-
-    const activeCallbackUrl = `${activeFrontendUrl}/api/payment/sabpaisa/callback`;
 
     // Direct Payment Bypass for Testing Mode
     const isPaymentBypass = process.env.PAYMENT_BYPASS === "true" || req.body?.bypass === true;
