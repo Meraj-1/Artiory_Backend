@@ -384,14 +384,48 @@ export const shipOrderWithiThink = async (req: Request, res: Response): Promise<
   }
 };
 
+// Helper: send admin alert email when auto-shipment fails
+const sendShipmentFailureAlert = async (orderId: string, reason: string): Promise<void> => {
+  try {
+    const { Resend } = await import("resend");
+    const apiKey = (process.env.RESEND_API_KEY || "").trim();
+    if (!apiKey) return;
+    const resend = new Resend(apiKey);
+    const adminEmail = (process.env.ADMIN_NOTIFICATION_EMAIL || "contact@artiory.com").trim();
+    await resend.emails.send({
+      from: "System Alert <system@artiory.com>",
+      to: adminEmail,
+      subject: `[ACTION REQUIRED] Auto-Shipment Failed: Order #${orderId.slice(-8).toUpperCase()}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;border:2px solid #ef4444;border-radius:8px;">
+          <h3 style="color:#ef4444;margin-top:0;">⚠️ Auto-Shipment Booking Failed</h3>
+          <p style="font-size:15px;"><strong>Order ID:</strong> #${orderId}</p>
+          <p style="font-size:15px;"><strong>Reason:</strong> ${reason}</p>
+          <p style="font-size:14px;color:#374151;">Payment was received successfully but iThink Logistics shipment could not be auto-booked.</p>
+          <p style="font-size:14px;color:#374151;">Please go to your <a href="https://dashboard.artiory.com/dashboard/orders" style="color:#2563eb;font-weight:bold;">Admin Dashboard</a> and manually book the shipment using the <strong>"Ship via iThink"</strong> button.</p>
+        </div>
+      `,
+    });
+    console.log(`[Shipment Alert] Failure alert sent to admin for Order ${orderId}`);
+  } catch (e) {
+    console.error("Failed to send shipment failure alert:", e);
+  }
+};
+
 /**
  * Programmatic helper to auto-book shipment with iThink Logistics
  * Called automatically as soon as an order is Paid / Reconciled
+ * Includes retry logic (3 attempts) and admin alert on final failure
  */
 export const bookShipmentForOrder = async (
   orderId: string | mongoose.Types.ObjectId,
   dimensions?: { weight?: number; length?: number; width?: number; height?: number }
 ): Promise<any> => {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 3000;
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
   try {
     if (!ITHINK_ACCESS_TOKEN || !ITHINK_SECRET_KEY) {
       console.warn("Auto-shipment skipped: iThink credentials not configured");
@@ -579,8 +613,28 @@ export const bookShipmentForOrder = async (
     };
 
     console.log("iThink Auto-Book Payload:", JSON.stringify(payload));
-    const apiResponse = await postToiThink("order/add.json", payload);
-    console.log("iThink Auto-Book Response:", JSON.stringify(apiResponse));
+
+    let apiResponse: any = null;
+    let lastError = "";
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        console.log(`iThink Auto-Book attempt ${attempt}/${MAX_RETRIES} for Order ${order._id}`);
+        apiResponse = await postToiThink("order/add.json", payload);
+        console.log(`iThink Auto-Book Response (attempt ${attempt}):`, JSON.stringify(apiResponse));
+
+        // Break if we got a valid response (success or a definitive error from iThink)
+        if (apiResponse && (apiResponse.status === "success" || apiResponse.status_code === 200 || apiResponse.status === "error" || apiResponse.remark)) {
+          break;
+        }
+      } catch (attemptErr: any) {
+        lastError = attemptErr?.message || "Network error";
+        console.error(`iThink Auto-Book attempt ${attempt} failed:`, lastError);
+        if (attempt < MAX_RETRIES) {
+          await sleep(RETRY_DELAY_MS * attempt);
+        }
+      }
+    }
 
     if (apiResponse && (apiResponse.status === "success" || apiResponse.status_code === 200) && apiResponse.data) {
       const keys = Object.keys(apiResponse.data);
@@ -640,13 +694,24 @@ export const bookShipmentForOrder = async (
         console.log(`Auto-shipped Order ${order._id} with AWB ${awbNumber} (${courierName})`);
         return { success: true, awbNumber, courierName, trackingUrl, shippingLabelUrl };
       } else {
-        console.error("Auto-ship booking unsuccessful:", shipmentResult?.remark || "Unknown error");
-        return { success: false, message: shipmentResult?.remark || "Auto-ship booking failed" };
+        const failReason = shipmentResult?.remark || "iThink returned unsuccessful shipment status";
+        console.error(`Auto-ship booking unsuccessful for Order ${order._id}:`, failReason);
+        // Mark order so admin knows manual action needed
+        await Order.findByIdAndUpdate(order._id, { $set: { shipmentStatus: "Unshipped" } }).catch(() => {});
+        sendShipmentFailureAlert(order._id.toString(), failReason).catch(() => {});
+        return { success: false, message: failReason };
       }
     }
-    return { success: false, message: "Auto-ship booking response failed" };
+
+    // All retries exhausted - no valid response from iThink
+    const exhaustedReason = lastError || "No valid response from iThink after all retries";
+    console.error(`Auto-ship failed after ${MAX_RETRIES} attempts for Order ${order._id}:`, exhaustedReason);
+    await Order.findByIdAndUpdate(order._id, { $set: { shipmentStatus: "Unshipped" } }).catch(() => {});
+    sendShipmentFailureAlert(order._id.toString(), exhaustedReason).catch(() => {});
+    return { success: false, message: exhaustedReason };
   } catch (err: any) {
     console.error("Auto-ship error:", err);
+    sendShipmentFailureAlert(orderId.toString(), err?.message || "Unexpected error in bookShipmentForOrder").catch(() => {});
     return { success: false, message: err?.message };
   }
 };
