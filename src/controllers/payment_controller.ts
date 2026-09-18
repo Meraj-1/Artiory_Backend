@@ -289,6 +289,14 @@ export const initiateSabPaisaPayment = async (req: Request, res: Response): Prom
  */
 export const sabPaisaCallback = async (req: Request, res: Response): Promise<any> => {
   try {
+    // LOG EVERYTHING - to see exact format SabPaisa sends
+    console.log("=== SABPAISA CALLBACK RECEIVED ===");
+    console.log("Method:", req.method);
+    console.log("Headers:", JSON.stringify(req.headers));
+    console.log("Body:", JSON.stringify(req.body));
+    console.log("Query:", JSON.stringify(req.query));
+    console.log("=================================");
+
     const encResponse = req.body?.encResponse || req.query?.encResponse;
 
     let clientTxnId = "";
@@ -380,14 +388,21 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
       return res.redirect(`${FRONTEND_URL}/checkout/status?status=error&message=OrderNotFound`);
     }
 
-    const upperStatus = (statusCode || "").toUpperCase().trim();
+    // Official SabPaisa status codes:
+    // 0000 = SUCCESS, 0100 = INITIATED/PENDING, 0200 = ABORTED, 0300 = FAILED, 0999 = UNKNOWN
+    const normalizedStatus = String(statusCode ?? "").trim().toUpperCase();
+    const normalizedStatusCode = String(statusCode ?? "").trim();
+
     const isSuccess =
-      upperStatus === "SUCCESS" ||
-      upperStatus === "TXN_SUCCESS" ||
-      upperStatus === "PAID" ||
-      upperStatus === "0000" ||
-      upperStatus === "0200" ||
-      upperStatus === "OK";
+      (normalizedStatus === "SUCCESS" && normalizedStatusCode === "0000") ||
+      normalizedStatus === "SUCCESS" ||
+      normalizedStatusCode === "0000";
+
+    const isFailed = normalizedStatusCode === "0300" || normalizedStatus === "FAILED";
+    const isAborted = normalizedStatusCode === "0200" || normalizedStatus === "ABORTED";
+    const isPending = normalizedStatusCode === "0100" || normalizedStatus === "INITIATED";
+
+    console.log(`SabPaisa status parsed: code=${normalizedStatusCode} status=${normalizedStatus} isSuccess=${isSuccess} isFailed=${isFailed} isAborted=${isAborted}`);
 
     if (isSuccess) {
       // Only update if not already Paid (prevent duplicate processing)
@@ -426,42 +441,24 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
         console.log(`SabPaisa Callback: Order ${order._id} already Paid, skipping duplicate processing.`);
       }
     } else {
-      // Payment not confirmed — keep as Pending, do NOT mark Failed
-      // Admin can manually reconcile from dashboard
       if (clientTxnId) order.clientTxnId = clientTxnId;
       await order.save();
-      console.log(`SabPaisa Callback: Order ${order._id} status not confirmed (${statusCode}) — keeping as Pending.`);
-    }
-
-    let displayAmount = amount;
-    if (Number(amount) > 1000 && !amount.toString().includes(".")) {
-      displayAmount = (Number(amount) / 100).toFixed(2);
-    }
-
-    const originHeader = (req.headers.origin as string) || (req.headers.referer as string) || "";
-    let activeFrontendUrl = (order as any)?.returnUrl || process.env.FRONTEND_URL || "https://artiory.com";
-
-    // Sanitize in case returnUrl was stored with internal port 3011 or localhost in production
-    if (activeFrontendUrl.includes("3011") || (process.env.NODE_ENV === "production" && activeFrontendUrl.includes("localhost"))) {
-      activeFrontendUrl = "https://artiory.com";
-    }
-
-    if (originHeader.includes("localhost:3000") || originHeader.includes("127.0.0.1:3000")) {
-      activeFrontendUrl = "http://localhost:3000";
-    } else if (originHeader.includes("localhost:3001") || originHeader.includes("127.0.0.1:3001")) {
-      activeFrontendUrl = "http://localhost:3001";
-    } else if (originHeader.includes("localhost:3002") || originHeader.includes("127.0.0.1:3002")) {
-      activeFrontendUrl = "http://localhost:3002";
-    } else if (originHeader.includes("artiory.com") || originHeader.includes("3011") || process.env.NODE_ENV === "production") {
-      activeFrontendUrl = "https://artiory.com";
+      if (isFailed) {
+        console.log(`SabPaisa Callback: Order ${order._id} payment FAILED (0300) — keeping Pending for manual review.`);
+      } else if (isAborted) {
+        console.log(`SabPaisa Callback: Order ${order._id} payment ABORTED by user (0200) — keeping Pending.`);
+      } else {
+        console.log(`SabPaisa Callback: Order ${order._id} status not confirmed (${statusCode}) — keeping Pending.`);
+      }
     }
 
     const isGuest = Boolean((order as any)?.isGuest);
+    const redirectBase = (process.env.FRONTEND_URL || "https://artiory.com").trim();
     const successRedirectUrl = isGuest
-      ? `${activeFrontendUrl}/track-order?orderId=${order._id}&payment=success`
-      : `${activeFrontendUrl}/profile?tab=orders&highlight=${order._id}`;
+      ? `${redirectBase}/track-order?orderId=${order._id}&payment=success`
+      : `${redirectBase}/profile?tab=orders&highlight=${order._id}`;
 
-    // Support JSON response when proxied by Next.js frontend route
+    // JSON response for API clients
     if (req.headers.accept?.includes("application/json") || req.headers["x-forwarded-by"] === "nextjs" || req.is("application/json")) {
       return res.status(200).json({
         success: true,
@@ -471,18 +468,12 @@ export const sabPaisaCallback = async (req: Request, res: Response): Promise<any
         clientTxnId,
         sabpaisaTxnId,
         status: order.status,
-        redirectUrl: isSuccess
-          ? successRedirectUrl
-          : `${activeFrontendUrl}/checkout?error=PaymentFailed`
+        redirectUrl: isSuccess ? successRedirectUrl : `${redirectBase}/checkout?error=PaymentFailed`
       });
     }
 
-    // Direct browser redirect
-    if (isSuccess) {
-      return res.redirect(successRedirectUrl);
-    } else {
-      return res.redirect(`${activeFrontendUrl}/checkout?error=PaymentCancelledOrFailed`);
-    }
+    // Browser redirect
+    return res.redirect(isSuccess ? successRedirectUrl : `${redirectBase}/checkout?error=PaymentCancelledOrFailed`);
   } catch (err: any) {
     console.error("SabPaisa Callback Error:", err);
     if (req.headers.accept?.includes("application/json") || req.headers["x-forwarded-by"] === "nextjs" || req.is("application/json")) {
@@ -528,15 +519,15 @@ export const enquireSabPaisaPayment = async (req: Request, res: Response): Promi
     const enquiryResponse = await pg3Request(endpoint, SABPAISA_AUTH_KEY, payload);
     console.log("SabPaisa PG 3.0 Enquiry Response:", JSON.stringify(enquiryResponse));
 
-    const status = enquiryResponse?.status || enquiryResponse?.statusCode || enquiryResponse?.data?.status || "PENDING";
-    const upperStatus = (status || "").toUpperCase().trim();
+    const rawStatus = enquiryResponse?.status || enquiryResponse?.statusCode || enquiryResponse?.data?.status || "PENDING";
+    const status = rawStatus;
+    const normalizedEnquiryStatus = String(rawStatus ?? "").trim().toUpperCase();
+    const normalizedEnquiryCode = String(rawStatus ?? "").trim();
+
     const isSuccess =
-      upperStatus === "SUCCESS" ||
-      upperStatus === "TXN_SUCCESS" ||
-      upperStatus === "PAID" ||
-      upperStatus === "0000" ||
-      upperStatus === "0200" ||
-      upperStatus === "OK";
+      (normalizedEnquiryStatus === "SUCCESS" && normalizedEnquiryCode === "0000") ||
+      normalizedEnquiryStatus === "SUCCESS" ||
+      normalizedEnquiryCode === "0000";
 
     // Auto-update Order in DB
     const rawTxnId = txnIdToQuery.toString();
@@ -564,9 +555,9 @@ export const enquireSabPaisaPayment = async (req: Request, res: Response): Promi
         if (order.user) {
           await User.findByIdAndUpdate(order.user, { $set: { cart: [] } }).catch(() => {});
         }
-      } else if (!isSuccess && (upperStatus === "EXPIRED" || upperStatus === "FAILED" || upperStatus === "0300")) {
+      } else if (!isSuccess && (normalizedEnquiryStatus === "EXPIRED" || normalizedEnquiryStatus === "FAILED" || normalizedEnquiryCode === "0300")) {
         // Do NOT auto-mark as Failed — keep Pending for admin manual reconciliation
-        console.log(`SabPaisa Enquiry: Order ${order._id} status ${upperStatus} — keeping as Pending`);
+        console.log(`SabPaisa Enquiry: Order ${order._id} status ${normalizedEnquiryStatus} — keeping as Pending`);
       }
     }
 
@@ -604,8 +595,9 @@ export const querySabPaisaStatus = (clientTxnId: string): Promise<string> => {
       const json = await pg3Request(endpoint, SABPAISA_AUTH_KEY, payload);
       console.log(`SabPaisa PG 3.0 Enquiry Response for ${clientTxnId}:`, JSON.stringify(json));
 
-      const status = json?.status || json?.statusCode || json?.data?.status || "PENDING";
-      resolve(status);
+      const rawStatus = json?.status || json?.statusCode || json?.data?.status || "PENDING";
+      console.log(`SabPaisa querySabPaisaStatus raw response for ${clientTxnId}:`, JSON.stringify(json));
+      resolve(rawStatus);
     } catch (err) {
       console.error("SabPaisa Enquiry error:", err);
       resolve("PENDING");
